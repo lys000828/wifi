@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.WifiSpoof" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#1A1A2E</item>
+        <item name="android:statusBarColor">#0D0D1A</item>
+        <item name="android:navigationBarColor">#0D0D1A</item>
+    </style>
+</resources>
