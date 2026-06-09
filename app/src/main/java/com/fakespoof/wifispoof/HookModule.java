@@ -425,11 +425,13 @@ public class HookModule implements IXposedHookLoadPackage {
     // 构建伪造的WifiInfo对象
     private WifiInfo buildFakeWifiInfo() {
         try {
-            // 通过反射创建WifiInfo实例
-            // WifiInfo没有public构造函数，需要通过WifiManager.getConnectionInfo()获取
-            // 或者使用Unsafe.allocateInstance (Xposed有这个能力)
-            Class<?> wifiInfoClass = WifiInfo.class;
-            WifiInfo info = (WifiInfo) XposedHelpers.allocateInstance(wifiInfoClass);
+            // 通过Unsafe创建WifiInfo实例（绕过构造函数）
+            Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
+            java.lang.reflect.Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
+            unsafeField.setAccessible(true);
+            Object unsafe = unsafeField.get(null);
+            java.lang.reflect.Method allocate = unsafeClass.getMethod("allocateInstance", Class.class);
+            WifiInfo info = (WifiInfo) allocate.invoke(unsafe, WifiInfo.class);
 
             // 通过反射设置字段
             setField(info, "mBssid", fakeBSSID);
@@ -456,7 +458,13 @@ public class HookModule implements IXposedHookLoadPackage {
         sr.frequency = fakeFrequency;
         sr.level = fakeRSSI;
         sr.capabilities = "[WPA2-PSK-CCMP][ESS]";
-        sr.SSIDLength = fakeSSID.length();
+        // SSIDLength在新版Android已移除，用反射设置
+        try {
+            java.lang.reflect.Field f = ScanResult.class.getField("SSIDLength");
+            f.setInt(sr, fakeSSID.length());
+        } catch (Exception e) {
+            // 忽略，旧版本才有这个字段
+        }
         return sr;
     }
 
@@ -487,7 +495,7 @@ public class HookModule implements IXposedHookLoadPackage {
 
     // 简单回调接口
     private interface HookCallback {
-        void onHook(MethodHookParam param) throws Throwable;
+        void onHook(XC_MethodHook.MethodHookParam param) throws Throwable;
     }
 
     // 设置对象字段（含父类）
