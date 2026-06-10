@@ -318,7 +318,7 @@ public class HookModule implements IXposedHookLoadPackage {
             writeLog("✗ NetworkInterface.getInetAddresses: " + t.getMessage());
         }
 
-        // getInterfaceAddresses → 伪造IP (Android 23+)
+        // getInterfaceAddresses → 伪造IP (Android 23+) - 使用反射创建
         try {
             findAndHookMethod(NetworkInterface.class, "getInterfaceAddresses", new XC_MethodHook() {
                 @Override
@@ -328,14 +328,23 @@ public class HookModule implements IXposedHookLoadPackage {
                     if (name != null && (name.equals("wlan0") || name.contains("wlan")
                             || name.contains("wifi") || name.contains("eth"))) {
                         try {
-                            java.net.InterfaceAddress fakeAddr = new java.net.InterfaceAddress(
-                                InetAddress.getByName(fakeIP));
-                            List<java.net.InterfaceAddress> addrs = new ArrayList<>();
+                            // 使用反射创建InterfaceAddress
+                            Class<?> ifAddrClass = Class.forName("java.net.InterfaceAddress");
+                            java.lang.reflect.Constructor<?> constructor = ifAddrClass.getDeclaredConstructor();
+                            constructor.setAccessible(true);
+                            Object fakeAddr = constructor.newInstance();
+
+                            // 设置address字段
+                            Field addrField = ifAddrClass.getDeclaredField("address");
+                            addrField.setAccessible(true);
+                            addrField.set(fakeAddr, InetAddress.getByName(fakeIP));
+
+                            List<Object> addrs = new ArrayList<>();
                             addrs.add(fakeAddr);
                             param.setResult(addrs);
-                            writeLog("✓ getInterfaceAddresses hooked for " + name);
+                            writeLog("✓ getInterfaceAddresses hooked for " + name + " → " + fakeIP);
                         } catch (Exception e) {
-                            // 忽略
+                            writeLog("✗ getInterfaceAddresses hook failed: " + e.getMessage());
                         }
                     }
                 }
