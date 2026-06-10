@@ -1102,7 +1102,18 @@ public class HookModule implements IXposedHookLoadPackage {
     private void loadConfig(ClassLoader cl, String packageName) {
         XposedBridge.log(TAG + ": loadConfig START for package: " + packageName);
 
-        // 方法1: 直接读取XML文件（最可靠）
+        // 方法1: 从外部存储配置文件读取（最可靠）
+        try {
+            loadConfigFromExternalFile();
+            writeLog("Config loaded from external file successfully");
+            XposedBridge.log(TAG + ": config loaded from external file → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
+            return;
+        } catch (Throwable t) {
+            writeLog("External file load failed: " + t.getMessage());
+            XposedBridge.log(TAG + ": External load failed: " + t.getMessage());
+        }
+
+        // 方法2: 直接读取SharedPreferences XML文件
         try {
             loadConfigFromFile();
             writeLog("Config loaded from XML file successfully");
@@ -1113,7 +1124,7 @@ public class HookModule implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": XML load failed: " + t.getMessage());
         }
 
-        // 方法2: 通过createPackageContext
+        // 方法3: 通过createPackageContext
         try {
             Object at = XposedHelpers.callStaticMethod(
                 Class.forName("android.app.ActivityThread"), "currentActivityThread");
@@ -1149,28 +1160,84 @@ public class HookModule implements IXposedHookLoadPackage {
         }
     }
 
+    // 从外部存储配置文件读取
+    private void loadConfigFromExternalFile() throws Throwable {
+        // 尝试多个可能的外部存储路径
+        String[] possiblePaths = {
+            "/sdcard/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt",
+            "/storage/emulated/0/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt",
+            "/mnt/sdcard/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt"
+        };
+
+        File configFile = null;
+        for (String path : possiblePaths) {
+            File f = new File(path);
+            XposedBridge.log(TAG + ": checking external path: " + path + " exists=" + f.exists());
+            if (f.exists()) {
+                configFile = f;
+                XposedBridge.log(TAG + ": FOUND external config at: " + path);
+                break;
+            }
+        }
+
+        if (configFile == null) {
+            throw new Exception("External config file not found");
+        }
+
+        XposedBridge.log(TAG + ": reading external config from: " + configFile.getAbsolutePath());
+
+        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(configFile));
+        String line;
+        while ((line = reader.readLine()) != null) {
+            line = line.trim();
+            if (line.startsWith("enabled=")) {
+                enabled = "true".equals(line.substring(8));
+            } else if (line.startsWith("bssid=")) {
+                fakeBSSID = line.substring(6);
+            } else if (line.startsWith("mac=")) {
+                fakeMAC = line.substring(4);
+            } else if (line.startsWith("ssid=")) {
+                fakeSSID = line.substring(5).replace("\"", "");
+            } else if (line.startsWith("ip=")) {
+                fakeIP = line.substring(3);
+            } else if (line.startsWith("gateway=")) {
+                fakeGateway = line.substring(8);
+            } else if (line.startsWith("netmask=")) {
+                fakeNetmask = line.substring(8);
+            } else if (line.startsWith("dns1=")) {
+                fakeDNS1 = line.substring(5);
+            } else if (line.startsWith("dns2=")) {
+                fakeDNS2 = line.substring(5);
+            }
+        }
+        reader.close();
+
+        XposedBridge.log(TAG + ": external config loaded → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
+    }
+
     // 直接读取SharedPreferences XML文件
     private void loadConfigFromFile() throws Throwable {
         // 尝试多个可能的路径
         String[] possiblePaths = {
             "/data/data/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml",
             "/data/user/0/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml",
-            "/data/data/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml"
+            "/data/user_de/0/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml"
         };
 
         File prefsFile = null;
         for (String path : possiblePaths) {
             File f = new File(path);
+            XposedBridge.log(TAG + ": checking path: " + path + " exists=" + f.exists());
             if (f.exists()) {
                 prefsFile = f;
-                XposedBridge.log(TAG + ": found config file at: " + path);
+                XposedBridge.log(TAG + ": FOUND config file at: " + path);
                 break;
             }
         }
 
         if (prefsFile == null) {
             writeLog("Config file NOT FOUND in any location");
-            XposedBridge.log(TAG + ": config file not found, using defaults");
+            XposedBridge.log(TAG + ": config file not found in any location");
             throw new Exception("Config file not found");
         }
 
@@ -1187,6 +1254,8 @@ public class HookModule implements IXposedHookLoadPackage {
 
         String xml = sb.toString();
         XposedBridge.log(TAG + ": XML content length: " + xml.length());
+        // 打印XML内容前200字符用于调试
+        XposedBridge.log(TAG + ": XML preview: " + xml.substring(0, Math.min(200, xml.length())));
 
         // 解析配置
         enabled = parseXmlBool(xml, "spoof_enabled", true);

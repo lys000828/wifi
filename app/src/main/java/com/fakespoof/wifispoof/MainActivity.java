@@ -119,7 +119,7 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // 保存配置
+        // 保存配置到 SharedPreferences
         config.setFakeBSSID(bssid);
         config.setFakeMAC(mac);
         config.setFakeSSID(ssid);
@@ -129,6 +129,9 @@ public class MainActivity extends Activity {
         config.setFakeDNS1(dns1);
         config.setFakeDNS2(dns2);
         config.setEnabled(switchEnabled.isChecked());
+
+        // 同时写入到外部存储的配置文件（更可靠）
+        saveConfigToFile(bssid, mac, ssid, ip, gateway, netmask, dns1, dns2);
 
         // 验证保存是否成功
         SpoofConfig verifyConfig = new SpoofConfig(this);
@@ -145,6 +148,40 @@ public class MainActivity extends Activity {
 
         // 打印到日志
         android.util.Log.d("WifiSpoof", "Config saved: BSSID=" + savedBssid + " IP=" + savedIP);
+    }
+
+    // 保存配置到外部存储文件
+    private void saveConfigToFile(String bssid, String mac, String ssid, String ip,
+                                  String gateway, String netmask, String dns1, String dns2) {
+        try {
+            // 使用外部存储，所有应用都可以读取
+            java.io.File externalDir = getExternalFilesDir(null);
+            if (externalDir == null) {
+                android.util.Log.e("WifiSpoof", "External dir is null");
+                return;
+            }
+
+            java.io.File configFile = new java.io.File(externalDir, "wifi_spoof_config.txt");
+            java.io.FileWriter writer = new java.io.FileWriter(configFile);
+
+            writer.write("enabled=" + switchEnabled.isChecked() + "\n");
+            writer.write("bssid=" + bssid + "\n");
+            writer.write("mac=" + mac + "\n");
+            writer.write("ssid=" + ssid + "\n");
+            writer.write("ip=" + ip + "\n");
+            writer.write("gateway=" + gateway + "\n");
+            writer.write("netmask=" + netmask + "\n");
+            writer.write("dns1=" + dns1 + "\n");
+            writer.write("dns2=" + dns2 + "\n");
+
+            writer.close();
+
+            android.util.Log.d("WifiSpoof", "Config file saved to: " + configFile.getAbsolutePath());
+            android.util.Log.d("WifiSpoof", "File size: " + configFile.length() + " bytes");
+
+        } catch (Exception e) {
+            android.util.Log.e("WifiSpoof", "Failed to save config file", e);
+        }
     }
 
     private void generateRandom() {
