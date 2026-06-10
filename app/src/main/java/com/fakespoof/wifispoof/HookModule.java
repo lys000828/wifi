@@ -528,8 +528,8 @@ public class HookModule implements IXposedHookLoadPackage {
             setIntField(info, "mFrequency", fakeFrequency);
             setIntField(info, "mIpAddress", ipToInt(fakeIP));
             // Android 12+ 可能有不同的字段名
-            setField(info, "mWifiStandard", 4); // IEEE_802_11_AC
-            setField(info, "mSecurityType", 3);  // WPA2_PSK
+            setIntField(info, "mWifiStandard", 4); // IEEE_802_11_AC
+            setIntField(info, "mSecurityType", 3);  // WPA2_PSK
 
             return info;
         } catch (Throwable t) {
