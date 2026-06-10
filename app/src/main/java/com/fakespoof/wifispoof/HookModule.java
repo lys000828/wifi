@@ -634,10 +634,14 @@ public class HookModule implements IXposedHookLoadPackage {
     // 从SharedPreferences读取配置
     private void loadConfig(ClassLoader cl) {
         try {
+            // 通过createPackageContext获取WifiSpoof自身的SharedPreferences
             Object at = XposedHelpers.callStaticMethod(
                 Class.forName("android.app.ActivityThread"), "currentActivityThread");
-            Object ctx = XposedHelpers.callMethod(at, "getSystemContext");
-            Object prefs = XposedHelpers.callMethod(ctx, "getSharedPreferences", PREF_NAME, 0);
+            Object sysCtx = XposedHelpers.callMethod(at, "getSystemContext");
+            // createPackageContext 获取WifiSpoof的Context，CONTEXT_IGNORE_SECURITY=2
+            Object spoofCtx = XposedHelpers.callMethod(sysCtx, "createPackageContext",
+                PKG_SELF, 2);
+            Object prefs = XposedHelpers.callMethod(spoofCtx, "getSharedPreferences", PREF_NAME, 0);
 
             enabled = (Boolean) XposedHelpers.callMethod(prefs, "getBoolean", "spoof_enabled", true);
             fakeBSSID = (String) XposedHelpers.callMethod(prefs, "getString", "fake_bssid", "AA:BB:CC:DD:EE:FF");
@@ -646,12 +650,72 @@ public class HookModule implements IXposedHookLoadPackage {
             // 去掉引号
             fakeSSID = rawSSID.replace("\"", "");
 
-            writeLog("Config loaded: en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
-            XposedBridge.log(TAG + ": config → en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+            writeLog("Config loaded via createPackageContext: en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+            XposedBridge.log(TAG + ": config(v2) → en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
         } catch (Throwable t) {
             writeLog("Config load FAILED: " + t.getMessage());
-            XposedBridge.log(TAG + ": loadConfig failed, use defaults");
+            XposedBridge.log(TAG + ": loadConfig failed: " + t.getMessage());
+            // 兜底：直接读取XML文件
+            try {
+                loadConfigFromFile();
+            } catch (Throwable t2) {
+                writeLog("File fallback also failed: " + t2.getMessage());
+                XposedBridge.log(TAG + ": all config methods failed, use defaults");
+            }
         }
+    }
+
+    // 兜底方案：直接读取SharedPreferences XML文件
+    private void loadConfigFromFile() throws Throwable {
+        File prefsFile = new File("/data/data/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml");
+        if (!prefsFile.exists()) {
+            writeLog("Config file not found: " + prefsFile.getAbsolutePath());
+            return;
+        }
+
+        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(prefsFile));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) {
+            sb.append(line);
+        }
+        reader.close();
+
+        String xml = sb.toString();
+        // 简单XML解析
+        enabled = parseXmlBool(xml, "spoof_enabled", true);
+        fakeBSSID = parseXmlString(xml, "fake_bssid", "AA:BB:CC:DD:EE:FF");
+        fakeMAC = parseXmlString(xml, "fake_mac", "AA:BB:CC:DD:EE:FF");
+        String rawSSID = parseXmlString(xml, "fake_ssid", "\"MyHomeWiFi\"");
+        fakeSSID = rawSSID.replace("\"", "");
+
+        writeLog("Config loaded from file: en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+        XposedBridge.log(TAG + ": config(file) → en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+    }
+
+    // 从XML中提取字符串值
+    private String parseXmlString(String xml, String key, String defaultValue) {
+        try {
+            // 搜索 name="key">value< 格式
+            String search = "name=\"" + key + "\">";
+            int start = xml.indexOf(search);
+            if (start < 0) return defaultValue;
+            start += search.length();
+            int end = xml.indexOf("<", start);
+            if (end < 0) return defaultValue;
+            String val = xml.substring(start, end);
+            // XML转义还原
+            val = val.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'");
+            return val;
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    // 从XML中提取布尔值
+    private boolean parseXmlBool(String xml, String key, boolean defaultValue) {
+        String val = parseXmlString(xml, key, String.valueOf(defaultValue));
+        return "true".equals(val);
     }
 
     // 写日志到文件
