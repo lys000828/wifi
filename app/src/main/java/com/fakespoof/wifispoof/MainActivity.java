@@ -130,8 +130,21 @@ public class MainActivity extends Activity {
         config.setFakeDNS2(dns2);
         config.setEnabled(switchEnabled.isChecked());
 
+        // 验证保存是否成功
+        SpoofConfig verifyConfig = new SpoofConfig(this);
+        String savedBssid = verifyConfig.getFakeBSSID();
+        String savedIP = verifyConfig.getFakeIP();
+
+        String msg = "已保存！\n" +
+            "BSSID: " + savedBssid + "\n" +
+            "IP: " + savedIP + "\n\n" +
+            "请重启目标应用";
+
         updateStatus();
-        Toast.makeText(this, "已保存，请重启目标应用", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+
+        // 打印到日志
+        android.util.Log.d("WifiSpoof", "Config saved: BSSID=" + savedBssid + " IP=" + savedIP);
     }
 
     private void generateRandom() {
