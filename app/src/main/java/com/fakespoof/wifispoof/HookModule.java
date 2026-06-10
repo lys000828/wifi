@@ -89,7 +89,7 @@ public class HookModule implements IXposedHookLoadPackage {
             return;
         }
 
-        loadConfig(lpparam.classLoader);
+        loadConfig(lpparam.classLoader, lpparam.packageName);
         if (!enabled) {
             writeLog("STATUS: DISABLED, skip " + lpparam.packageName);
             XposedBridge.log(TAG + ": disabled, skip " + lpparam.packageName);
@@ -1099,60 +1099,83 @@ public class HookModule implements IXposedHookLoadPackage {
     }
 
     // 从SharedPreferences读取配置
-    private void loadConfig(ClassLoader cl) {
+    private void loadConfig(ClassLoader cl, String packageName) {
+        XposedBridge.log(TAG + ": loadConfig START for package: " + packageName);
+
+        // 方法1: 直接读取XML文件（最可靠）
         try {
-            // 通过createPackageContext获取WifiSpoof自身的SharedPreferences
+            loadConfigFromFile();
+            writeLog("Config loaded from XML file successfully");
+            XposedBridge.log(TAG + ": config loaded from XML → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
+            return;
+        } catch (Throwable t) {
+            writeLog("XML file load failed: " + t.getMessage());
+            XposedBridge.log(TAG + ": XML load failed: " + t.getMessage());
+        }
+
+        // 方法2: 通过createPackageContext
+        try {
             Object at = XposedHelpers.callStaticMethod(
                 Class.forName("android.app.ActivityThread"), "currentActivityThread");
             Object sysCtx = XposedHelpers.callMethod(at, "getSystemContext");
-            // createPackageContext 获取WifiSpoof的Context，CONTEXT_IGNORE_SECURITY=2
             Object spoofCtx = XposedHelpers.callMethod(sysCtx, "createPackageContext",
                 PKG_SELF, 2);
             Object prefs = XposedHelpers.callMethod(spoofCtx, "getSharedPreferences", PREF_NAME, 0);
 
-            // 读取基础配置
             enabled = (Boolean) XposedHelpers.callMethod(prefs, "getBoolean", "spoof_enabled", true);
             fakeBSSID = (String) XposedHelpers.callMethod(prefs, "getString", "fake_bssid", "AA:BB:CC:DD:EE:FF");
             fakeMAC = (String) XposedHelpers.callMethod(prefs, "getString", "fake_mac", "AA:BB:CC:DD:EE:FF");
             String rawSSID = (String) XposedHelpers.callMethod(prefs, "getString", "fake_ssid", "\"MyHomeWiFi\"");
             fakeSSID = rawSSID.replace("\"", "");
 
-            // 读取IP配置
             fakeIP = (String) XposedHelpers.callMethod(prefs, "getString", "fake_ip", "192.168.1.100");
             fakeGateway = (String) XposedHelpers.callMethod(prefs, "getString", "fake_gateway", "192.168.1.1");
             fakeNetmask = (String) XposedHelpers.callMethod(prefs, "getString", "fake_netmask", "255.255.255.0");
             fakeDNS1 = (String) XposedHelpers.callMethod(prefs, "getString", "fake_dns1", "8.8.8.8");
             fakeDNS2 = (String) XposedHelpers.callMethod(prefs, "getString", "fake_dns2", "8.8.4.4");
 
-            // 读取网络参数
             fakeFrequency = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_frequency", 5180);
             fakeLinkSpeed = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_link_speed", 72);
             fakeRSSI = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_rssi", -45);
 
-            writeLog("Config loaded: en=" + enabled);
+            writeLog("Config loaded via createPackageContext");
             writeLog("  WiFi: b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
-            writeLog("  IP: " + fakeIP + " gw=" + fakeGateway + " dns=" + fakeDNS1 + "," + fakeDNS2);
-            XposedBridge.log(TAG + ": config → en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " ip=" + fakeIP);
+            writeLog("  IP: " + fakeIP + " gw=" + fakeGateway);
+            XposedBridge.log(TAG + ": config → BSSID=" + fakeBSSID + " IP=" + fakeIP);
         } catch (Throwable t) {
-            writeLog("Config load FAILED: " + t.getMessage());
-            XposedBridge.log(TAG + ": loadConfig failed: " + t.getMessage());
-            // 兜底：直接读取XML文件
-            try {
-                loadConfigFromFile();
-            } catch (Throwable t2) {
-                writeLog("File fallback also failed: " + t2.getMessage());
-                XposedBridge.log(TAG + ": all config methods failed, use defaults");
-            }
+            writeLog("createPackageContext failed: " + t.getMessage());
+            XposedBridge.log(TAG + ": createPackageContext failed: " + t.getMessage());
+            XposedBridge.log(TAG + ": using default values");
         }
     }
 
-    // 兜底方案：直接读取SharedPreferences XML文件
+    // 直接读取SharedPreferences XML文件
     private void loadConfigFromFile() throws Throwable {
-        File prefsFile = new File("/data/data/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml");
-        if (!prefsFile.exists()) {
-            writeLog("Config file not found: " + prefsFile.getAbsolutePath());
-            return;
+        // 尝试多个可能的路径
+        String[] possiblePaths = {
+            "/data/data/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml",
+            "/data/user/0/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml",
+            "/data/data/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml"
+        };
+
+        File prefsFile = null;
+        for (String path : possiblePaths) {
+            File f = new File(path);
+            if (f.exists()) {
+                prefsFile = f;
+                XposedBridge.log(TAG + ": found config file at: " + path);
+                break;
+            }
         }
+
+        if (prefsFile == null) {
+            writeLog("Config file NOT FOUND in any location");
+            XposedBridge.log(TAG + ": config file not found, using defaults");
+            throw new Exception("Config file not found");
+        }
+
+        XposedBridge.log(TAG + ": reading config from: " + prefsFile.getAbsolutePath());
+        XposedBridge.log(TAG + ": file size: " + prefsFile.length() + " bytes");
 
         java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(prefsFile));
         StringBuilder sb = new StringBuilder();
@@ -1163,6 +1186,8 @@ public class HookModule implements IXposedHookLoadPackage {
         reader.close();
 
         String xml = sb.toString();
+        XposedBridge.log(TAG + ": XML content length: " + xml.length());
+
         // 解析配置
         enabled = parseXmlBool(xml, "spoof_enabled", true);
         fakeBSSID = parseXmlString(xml, "fake_bssid", "AA:BB:CC:DD:EE:FF");
@@ -1182,10 +1207,16 @@ public class HookModule implements IXposedHookLoadPackage {
         fakeLinkSpeed = parseXmlInt(xml, "fake_link_speed", 72);
         fakeRSSI = parseXmlInt(xml, "fake_rssi", -45);
 
-        writeLog("Config loaded from file: en=" + enabled);
-        writeLog("  WiFi: b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
-        writeLog("  IP: " + fakeIP + " gw=" + fakeGateway + " dns=" + fakeDNS1 + "," + fakeDNS2);
-        XposedBridge.log(TAG + ": config(file) → en=" + enabled + " ip=" + fakeIP);
+        writeLog("Config loaded from file:");
+        writeLog("  enabled=" + enabled);
+        writeLog("  BSSID=" + fakeBSSID);
+        writeLog("  MAC=" + fakeMAC);
+        writeLog("  SSID=" + fakeSSID);
+        writeLog("  IP=" + fakeIP);
+        writeLog("  Gateway=" + fakeGateway);
+        writeLog("  DNS=" + fakeDNS1 + "," + fakeDNS2);
+
+        XposedBridge.log(TAG + ": LOADED BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
     }
 
     // 从XML中提取字符串值
