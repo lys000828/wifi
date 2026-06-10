@@ -635,17 +635,35 @@ public class HookModule implements IXposedHookLoadPackage {
                     if (fake != null) {
                         p.setResult(fake);
                     }
-                    // 即使fake为null也不返回原值，避免真实频率泄漏
                 }
             });
+        }
 
-            // hasTransport → WiFi=true
+        // hasTransport → WiFi=true (Android 6+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             hook("android.net.NetworkCapabilities", cl, "hasTransport", p -> {
                 int type = (int) p.args[0];
                 if (type == 0) p.setResult(true);  // TRANSPORT_WIFI
                 if (type == 1) p.setResult(false); // TRANSPORT_CELLULAR
                 if (type == 3) p.setResult(false); // TRANSPORT_ETHERNET
             });
+            writeLog("✓ NetworkCapabilities.hasTransport");
+        }
+
+        // Android 9 适配: hook ActiveNetwork获取方式
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            hook("android.net.ConnectivityManager", cl, "getActiveNetwork", p -> {
+                // 保持原返回值，但后续会通过其他hook伪造信息
+            });
+            writeLog("✓ ConnectivityManager.getActiveNetwork (Android 6+)");
+        }
+
+        // Android 9 适配: hook getNetworkCapabilities
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            hook("android.net.ConnectivityManager", cl, "getNetworkCapabilities", p -> {
+                // 保持原返回值，NetworkCapabilities的其他方法会被hook
+            });
+            writeLog("✓ ConnectivityManager.getNetworkCapabilities (Android 6+)");
         }
 
         // ========== LinkProperties IP Hooks (所有Android版本) ==========
@@ -839,14 +857,14 @@ public class HookModule implements IXposedHookLoadPackage {
             setField(info, "mBSSID", fakeBSSID);
             setField(info, "mMacAddress", fakeMAC);
             setField(info, "mSSID", "\"" + fakeSSID + "\"");
-            setIntField(info, "mNetworkId", fakeNetworkId);
-            setIntField(info, "mRssi", fakeRSSI);
-            setIntField(info, "mLinkSpeed", fakeLinkSpeed);
-            setIntField(info, "mFrequency", fakeFrequency);
-            setIntField(info, "mIpAddress", ipToInt(fakeIP));
-            // Android 12+ 可能有不同的字段名
-            setIntField(info, "mWifiStandard", 4); // IEEE_802_11_AC
-            setIntField(info, "mSecurityType", 3);  // WPA2_PSK
+            setIntFieldSafe(info, "mNetworkId", fakeNetworkId);
+            setIntFieldSafe(info, "mRssi", fakeRSSI);
+            setIntFieldSafe(info, "mLinkSpeed", fakeLinkSpeed);
+            setIntFieldSafe(info, "mFrequency", fakeFrequency);
+            setIntFieldSafe(info, "mIpAddress", ipToInt(fakeIP));
+            // Android 12+ 可能有不同的字段名，Android 9 可能没有这些字段
+            setIntFieldSafe(info, "mWifiStandard", 4); // IEEE_802_11_AC
+            setIntFieldSafe(info, "mSecurityType", 3);  // WPA2_PSK
 
             return info;
         } catch (Throwable t) {
@@ -920,6 +938,25 @@ public class HookModule implements IXposedHookLoadPackage {
             }
         } catch (Throwable t) {
             // 忽略
+        }
+    }
+
+    // 安全的setIntField - 兼容所有Android版本
+    private void setIntFieldSafe(Object obj, String name, int value) {
+        try {
+            Class<?> clazz = obj.getClass();
+            while (clazz != null) {
+                try {
+                    Field f = clazz.getDeclaredField(name);
+                    f.setAccessible(true);
+                    f.setInt(obj, value);
+                    return;
+                } catch (NoSuchFieldException e) {
+                    clazz = clazz.getSuperclass();
+                }
+            }
+        } catch (Throwable t) {
+            // 字段不存在，忽略
         }
     }
 
