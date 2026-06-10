@@ -172,11 +172,13 @@ public class HookModule implements IXposedHookLoadPackage {
         // getIpAddress → 伪造IP
         hook("android.net.wifi.WifiInfo", cl, "getIpAddress", p -> {
             p.setResult(ipToInt(fakeIP));
+            writeLog("✓ WifiInfo.getIpAddress → " + fakeIP);
         });
 
         // getServerAddress
         hook("android.net.wifi.WifiInfo", cl, "getServerAddress", p -> {
             p.setResult(ipToInt(fakeGateway));
+            writeLog("✓ WifiInfo.getServerAddress → " + fakeGateway);
         });
 
         // isWifiEnabled
@@ -673,6 +675,98 @@ public class HookModule implements IXposedHookLoadPackage {
                 // 保持原返回值，NetworkCapabilities的其他方法会被hook
             });
             writeLog("✓ ConnectivityManager.getNetworkCapabilities (Android 6+)");
+        }
+
+        // ConnectivityManager.getActiveNetworkInfo → 返回伪造NetworkInfo
+        try {
+            hook("android.net.ConnectivityManager", cl, "getActiveNetworkInfo", p -> {
+                // 让原始方法执行，后续会通过其他hook伪造信息
+                writeLog("✓ ConnectivityManager.getActiveNetworkInfo called");
+            });
+            writeLog("✓ ConnectivityManager.getActiveNetworkInfo");
+        } catch (Throwable t) {
+            writeLog("✗ ConnectivityManager.getActiveNetworkInfo: " + t.getMessage());
+        }
+
+        // NetworkInfo.getExtraInfo → 返回伪造SSID
+        try {
+            hook("android.net.NetworkInfo", cl, "getExtraInfo", p -> {
+                p.setResult("\"" + fakeSSID + "\"");
+                writeLog("✓ NetworkInfo.getExtraInfo → " + fakeSSID);
+            });
+            writeLog("✓ NetworkInfo.getExtraInfo");
+        } catch (Throwable t) {
+            writeLog("✗ NetworkInfo.getExtraInfo: " + t.getMessage());
+        }
+
+        // LinkAddress.getAddress → 伪造IP (Android 7+)
+        try {
+            findAndHookMethod("android.net.LinkAddress", cl, "getAddress", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        InetAddress fakeAddr = InetAddress.getByName(fakeIP);
+                        param.setResult(fakeAddr);
+                        writeLog("✓ LinkAddress.getAddress → " + fakeIP);
+                    } catch (Exception e) {
+                        writeLog("✗ LinkAddress.getAddress hook failed: " + e.getMessage());
+                    }
+                }
+            });
+            writeLog("✓ LinkAddress.getAddress");
+        } catch (Throwable t) {
+            writeLog("✗ LinkAddress.getAddress: " + t.getMessage());
+        }
+
+        // LinkAddress.toString → 返回伪造IP (Android 7+)
+        try {
+            findAndHookMethod("android.net.LinkAddress", cl, "toString", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    param.setResult(fakeIP + "/24");
+                    writeLog("✓ LinkAddress.toString → " + fakeIP + "/24");
+                }
+            });
+            writeLog("✓ LinkAddress.toString");
+        } catch (Throwable t) {
+            writeLog("✗ LinkAddress.toString: " + t.getMessage());
+        }
+
+        // InetAddress.getHostAddress → 伪造IP (拦截所有InetAddress)
+        try {
+            findAndHookMethod(InetAddress.class, "getHostAddress", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    InetAddress addr = (InetAddress) param.thisObject;
+                    String hostAddr = addr.getHostAddress();
+                    // 检查是否是本地WiFi IP
+                    if (hostAddr != null && hostAddr.startsWith("192.168.") ||
+                        hostAddr.startsWith("10.") || hostAddr.startsWith("172.")) {
+                        // 可能是WiFi IP，替换为伪造值
+                        if (!hostAddr.equals(fakeIP)) {
+                            param.setResult(fakeIP);
+                            writeLog("✓ InetAddress.getHostAddress → " + fakeIP + " (was " + hostAddr + ")");
+                        }
+                    }
+                }
+            });
+            writeLog("✓ InetAddress.getHostAddress");
+        } catch (Throwable t) {
+            writeLog("✗ InetAddress.getHostAddress: " + t.getMessage());
+        }
+
+        // Inet4Address.getHostAddress → 伪造IPv4
+        try {
+            findAndHookMethod(java.net.Inet4Address.class, "getHostAddress", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    param.setResult(fakeIP);
+                    writeLog("✓ Inet4Address.getHostAddress → " + fakeIP);
+                }
+            });
+            writeLog("✓ Inet4Address.getHostAddress");
+        } catch (Throwable t) {
+            writeLog("✗ Inet4Address.getHostAddress: " + t.getMessage());
         }
 
         // ========== LinkProperties IP Hooks (所有Android版本) ==========
