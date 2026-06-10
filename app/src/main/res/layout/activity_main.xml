@@ -2,31 +2,70 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp" android:background="#1A1A2E">
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
             android:text="WiFi Spoof" android:textSize="24sp" android:textColor="#E8C547" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+
         <TextView android:id="@+id/tv_status" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:text="未配置" android:textSize="14sp" android:textColor="#4CAF50" android:background="#16213E" android:padding="12dp" android:layout_marginBottom="16dp"/>
+
         <Switch android:id="@+id/switch_enabled" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:text="启用伪造" android:textColor="#EAEAEA" android:checked="true" android:layout_marginBottom="16dp"/>
+
+        <!-- WiFi 配置 -->
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="📡 WiFi 配置" android:textColor="#E8C547" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="BSSID" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
         <EditText android:id="@+id/et_bssid" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:hint="AA:BB:CC:DD:EE:FF" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="textCapCharacters" android:layout_marginBottom="12dp"/>
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="WiFi MAC" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
         <EditText android:id="@+id/et_mac" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:hint="AA:BB:CC:DD:EE:FF" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="textCapCharacters" android:layout_marginBottom="12dp"/>
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="SSID" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
         <EditText android:id="@+id/et_ssid" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:hint="MyHomeWiFi" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="text" android:layout_marginBottom="24dp"/>
+            android:hint="MyHomeWiFi" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="text" android:layout_marginBottom="16dp"/>
+
+        <!-- IP 配置 -->
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="🌐 IP 配置" android:textColor="#E8C547" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="IP 地址" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
+        <EditText android:id="@+id/et_ip" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="192.168.1.100" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="text" android:layout_marginBottom="12dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="网关" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
+        <EditText android:id="@+id/et_gateway" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="192.168.1.1" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="text" android:layout_marginBottom="12dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="子网掩码" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
+        <EditText android:id="@+id/et_netmask" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="255.255.255.0" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="text" android:layout_marginBottom="12dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="DNS1 (主)" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
+        <EditText android:id="@+id/et_dns1" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="8.8.8.8" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="text" android:layout_marginBottom="12dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="DNS2 (备)" android:textColor="#AAA" android:textSize="12sp" android:layout_marginBottom="4dp"/>
+        <EditText android:id="@+id/et_dns2" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="8.8.4.4" android:textColor="#FFF" android:textColorHint="#555" android:background="#16213E" android:padding="12dp" android:inputType="text" android:layout_marginBottom="16dp"/>
+
+        <!-- 按钮 -->
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
             <Button android:id="@+id/btn_random" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="随机生成" android:backgroundTint="#533483" android:textColor="#FFF" android:layout_marginEnd="8dp"/>
             <Button android:id="@+id/btn_save" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="保存" android:backgroundTint="#E8C547" android:textColor="#000" android:layout_marginStart="8dp"/>
         </LinearLayout>
+
         <Button android:id="@+id/btn_detect" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:text="检测WiFi信息" android:backgroundTint="#2196F3" android:textColor="#FFF" android:layout_marginBottom="8dp"/>
+
         <Button android:id="@+id/btn_log" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:text="查看Hook日志" android:backgroundTint="#FF9800" android:textColor="#FFF" android:layout_marginBottom="16dp"/>
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="1.填写伪造值 2.保存 3.LSPosed启用模块 4.作用域选目标App 5.重启目标App 6.Network Analyzer验证"
+            android:text="1.填写伪造值 2.保存 3.LSPosed启用模块 4.作用域选目标App 5.重启目标App 6.验证效果"
             android:textColor="#777" android:textSize="12sp" android:lineSpacingExtra="4dp"/>
     </LinearLayout>
 </ScrollView>

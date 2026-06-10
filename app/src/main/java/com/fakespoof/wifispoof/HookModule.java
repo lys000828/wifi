@@ -41,15 +41,16 @@ public class HookModule implements IXposedHookLoadPackage {
     private String fakeSSID = "MyHomeWiFi";  // 不带引号
     private boolean enabled = true;
 
-    // 伪造网络参数
-    private final String fakeIP = "192.168.1.100";
-    private final String fakeGateway = "192.168.1.1";
-    private final String fakeDNS1 = "8.8.8.8";
-    private final String fakeDNS2 = "8.8.4.4";
-    private final int fakeFrequency = 5180;
-    private final int fakeLinkSpeed = 72;
-    private final int fakeRSSI = -45;
-    private final int fakeNetworkId = 1;
+    // 伪造网络参数 - 从SharedPreferences读取
+    private String fakeIP = "192.168.1.100";
+    private String fakeGateway = "192.168.1.1";
+    private String fakeNetmask = "255.255.255.0";
+    private String fakeDNS1 = "8.8.8.8";
+    private String fakeDNS2 = "8.8.4.4";
+    private int fakeFrequency = 5180;
+    private int fakeLinkSpeed = 72;
+    private int fakeRSSI = -45;
+    private int fakeNetworkId = 1;
 
     // 日志文件路径
     private static final String LOG_FILE = "/sdcard/wifispoof_hook.log";
@@ -533,13 +534,13 @@ public class HookModule implements IXposedHookLoadPackage {
                 android.net.DhcpInfo fakeDhcp = new android.net.DhcpInfo();
                 fakeDhcp.ipAddress = ipToInt(fakeIP);
                 fakeDhcp.gateway = ipToInt(fakeGateway);
-                fakeDhcp.netmask = ipToInt("255.255.255.0");
+                fakeDhcp.netmask = ipToInt(fakeNetmask);
                 fakeDhcp.dns1 = ipToInt(fakeDNS1);
                 fakeDhcp.dns2 = ipToInt(fakeDNS2);
                 fakeDhcp.serverAddress = ipToInt(fakeGateway);
                 fakeDhcp.leaseDuration = 86400;
                 p.setResult(fakeDhcp);
-                writeLog("✓ getDhcpInfo → fake (netmask=255.255.255.0)");
+                writeLog("✓ getDhcpInfo → IP=" + fakeIP + " gw=" + fakeGateway + " mask=" + fakeNetmask);
             } catch (Throwable e) {
                 writeLog("✗ getDhcpInfo hook failed: " + e.getMessage());
                 XposedBridge.log(TAG + ": build fake DhcpInfo failed: " + e.getMessage());
@@ -792,15 +793,29 @@ public class HookModule implements IXposedHookLoadPackage {
                 PKG_SELF, 2);
             Object prefs = XposedHelpers.callMethod(spoofCtx, "getSharedPreferences", PREF_NAME, 0);
 
+            // 读取基础配置
             enabled = (Boolean) XposedHelpers.callMethod(prefs, "getBoolean", "spoof_enabled", true);
             fakeBSSID = (String) XposedHelpers.callMethod(prefs, "getString", "fake_bssid", "AA:BB:CC:DD:EE:FF");
             fakeMAC = (String) XposedHelpers.callMethod(prefs, "getString", "fake_mac", "AA:BB:CC:DD:EE:FF");
             String rawSSID = (String) XposedHelpers.callMethod(prefs, "getString", "fake_ssid", "\"MyHomeWiFi\"");
-            // 去掉引号
             fakeSSID = rawSSID.replace("\"", "");
 
-            writeLog("Config loaded via createPackageContext: en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
-            XposedBridge.log(TAG + ": config(v2) → en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+            // 读取IP配置
+            fakeIP = (String) XposedHelpers.callMethod(prefs, "getString", "fake_ip", "192.168.1.100");
+            fakeGateway = (String) XposedHelpers.callMethod(prefs, "getString", "fake_gateway", "192.168.1.1");
+            fakeNetmask = (String) XposedHelpers.callMethod(prefs, "getString", "fake_netmask", "255.255.255.0");
+            fakeDNS1 = (String) XposedHelpers.callMethod(prefs, "getString", "fake_dns1", "8.8.8.8");
+            fakeDNS2 = (String) XposedHelpers.callMethod(prefs, "getString", "fake_dns2", "8.8.4.4");
+
+            // 读取网络参数
+            fakeFrequency = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_frequency", 5180);
+            fakeLinkSpeed = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_link_speed", 72);
+            fakeRSSI = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_rssi", -45);
+
+            writeLog("Config loaded: en=" + enabled);
+            writeLog("  WiFi: b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+            writeLog("  IP: " + fakeIP + " gw=" + fakeGateway + " dns=" + fakeDNS1 + "," + fakeDNS2);
+            XposedBridge.log(TAG + ": config → en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " ip=" + fakeIP);
         } catch (Throwable t) {
             writeLog("Config load FAILED: " + t.getMessage());
             XposedBridge.log(TAG + ": loadConfig failed: " + t.getMessage());
@@ -831,15 +846,29 @@ public class HookModule implements IXposedHookLoadPackage {
         reader.close();
 
         String xml = sb.toString();
-        // 简单XML解析
+        // 解析配置
         enabled = parseXmlBool(xml, "spoof_enabled", true);
         fakeBSSID = parseXmlString(xml, "fake_bssid", "AA:BB:CC:DD:EE:FF");
         fakeMAC = parseXmlString(xml, "fake_mac", "AA:BB:CC:DD:EE:FF");
         String rawSSID = parseXmlString(xml, "fake_ssid", "\"MyHomeWiFi\"");
         fakeSSID = rawSSID.replace("\"", "");
 
-        writeLog("Config loaded from file: en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
-        XposedBridge.log(TAG + ": config(file) → en=" + enabled + " b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+        // 解析IP配置
+        fakeIP = parseXmlString(xml, "fake_ip", "192.168.1.100");
+        fakeGateway = parseXmlString(xml, "fake_gateway", "192.168.1.1");
+        fakeNetmask = parseXmlString(xml, "fake_netmask", "255.255.255.0");
+        fakeDNS1 = parseXmlString(xml, "fake_dns1", "8.8.8.8");
+        fakeDNS2 = parseXmlString(xml, "fake_dns2", "8.8.4.4");
+
+        // 解析网络参数
+        fakeFrequency = parseXmlInt(xml, "fake_frequency", 5180);
+        fakeLinkSpeed = parseXmlInt(xml, "fake_link_speed", 72);
+        fakeRSSI = parseXmlInt(xml, "fake_rssi", -45);
+
+        writeLog("Config loaded from file: en=" + enabled);
+        writeLog("  WiFi: b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
+        writeLog("  IP: " + fakeIP + " gw=" + fakeGateway + " dns=" + fakeDNS1 + "," + fakeDNS2);
+        XposedBridge.log(TAG + ": config(file) → en=" + enabled + " ip=" + fakeIP);
     }
 
     // 从XML中提取字符串值
@@ -865,6 +894,16 @@ public class HookModule implements IXposedHookLoadPackage {
     private boolean parseXmlBool(String xml, String key, boolean defaultValue) {
         String val = parseXmlString(xml, key, String.valueOf(defaultValue));
         return "true".equals(val);
+    }
+
+    // 从XML中提取整数值
+    private int parseXmlInt(String xml, String key, int defaultValue) {
+        String val = parseXmlString(xml, key, String.valueOf(defaultValue));
+        try {
+            return Integer.parseInt(val);
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 
     // 写日志到文件
