@@ -55,6 +55,24 @@ public class HookModule implements IXposedHookLoadPackage {
     // 日志文件路径
     private static final String LOG_FILE = "/sdcard/wifispoof_hook.log";
 
+    // 系统进程列表 - hook这些会导致网络问题
+    private static final String[] SYSTEM_PACKAGES = {
+        "android",
+        "com.android.wifi",
+        "com.android.systemui",
+        "com.android.settings",
+        "com.android.providers.settings",
+        "com.android.providers.media",
+        "com.android.providers.downloads",
+        "system_server",
+        "com.android.server",
+        "com.android.phone",
+        "com.android.bluetooth",
+        "com.android.nfc",
+        "com.android.shell",
+        "com.android.emergency"
+    };
+
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (lpparam.packageName.equals(PKG_SELF)) return;
@@ -64,6 +82,13 @@ public class HookModule implements IXposedHookLoadPackage {
         writeLog("Package: " + lpparam.packageName);
         writeLog("Time: " + System.currentTimeMillis());
 
+        // 检查是否是系统进程 - 如果是则跳过，避免影响系统功能
+        if (isSystemPackage(lpparam.packageName)) {
+            writeLog("⚠️ SKIP system package: " + lpparam.packageName);
+            XposedBridge.log(TAG + ": SKIP system package " + lpparam.packageName + " (may cause network issues)");
+            return;
+        }
+
         loadConfig(lpparam.classLoader);
         if (!enabled) {
             writeLog("STATUS: DISABLED, skip " + lpparam.packageName);
@@ -72,6 +97,7 @@ public class HookModule implements IXposedHookLoadPackage {
         }
 
         writeLog("Config: BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " SSID=" + fakeSSID);
+        writeLog("Config: IP=" + fakeIP + " GW=" + fakeGateway + " DNS=" + fakeDNS1 + "," + fakeDNS2);
         XposedBridge.log(TAG + ": hooks → " + lpparam.packageName
             + " [" + fakeBSSID + " | " + fakeMAC + " | " + fakeSSID + "]");
 
@@ -85,6 +111,28 @@ public class HookModule implements IXposedHookLoadPackage {
 
         writeLog("--- All hooks installed ---");
         XposedBridge.log(TAG + ": all 5 layers hooked for " + lpparam.packageName);
+    }
+
+    // 检查是否是系统进程
+    private boolean isSystemPackage(String packageName) {
+        if (packageName == null) return true;
+
+        // 检查是否在系统进程列表中
+        for (String sysPkg : SYSTEM_PACKAGES) {
+            if (sysPkg.equals(packageName)) {
+                return true;
+            }
+        }
+
+        // 检查是否是 com.android.* 开头的系统进程
+        if (packageName.startsWith("com.android.") && !packageName.equals("com.android.chrome")) {
+            return true;
+        }
+
+        // 检查是否是系统UID (uid < 10000)
+        // 注意：这个检查需要在运行时进行，这里先返回false
+
+        return false;
     }
 
     // ====================================================================

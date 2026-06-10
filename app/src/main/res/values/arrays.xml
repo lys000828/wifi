@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 默认scope - 建议在LSPosed管理器中设置为"所有应用" -->
+    <!-- 默认scope - 不要包含系统进程(android)，会导致网络问题 -->
     <string-array name="xposed_scope">
-        <item>android</item>
-        <item>com.android.wifi</item>
-        <item>com.android.systemui</item>
-        <item>com.android.settings</item>
-        <item>com.android.providers.settings</item>
-        <!-- 添加你想要hook的App包名，或在LSPosed中选择"所有应用" -->
+        <!-- 以下系统进程不要选择，会导致浏览器无法上网 -->
+        <!-- <item>android</item> -->
+        <!-- <item>com.android.wifi</item> -->
+        <!-- <item>com.android.systemui</item> -->
+
+        <!-- 在LSPosed中选择你想要伪造WiFi信息的App -->
+        <!-- 或选择"所有应用"（但不要选系统应用） -->
     </string-array>
 </resources>
