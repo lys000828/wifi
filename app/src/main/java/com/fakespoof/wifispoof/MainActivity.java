@@ -157,7 +157,7 @@ public class MainActivity extends Activity {
             // 使用多个可能的路径
             java.io.File[] dirs = {
                 getExternalFilesDir(null),
-                getExternalDir(),
+                getFilesDir(),
                 new java.io.File("/sdcard"),
                 new java.io.File("/storage/emulated/0")
             };
