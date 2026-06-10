@@ -154,14 +154,27 @@ public class MainActivity extends Activity {
     private void saveConfigToFile(String bssid, String mac, String ssid, String ip,
                                   String gateway, String netmask, String dns1, String dns2) {
         try {
-            // 使用外部存储，所有应用都可以读取
-            java.io.File externalDir = getExternalFilesDir(null);
-            if (externalDir == null) {
-                android.util.Log.e("WifiSpoof", "External dir is null");
+            // 使用多个可能的路径
+            java.io.File[] dirs = {
+                getExternalFilesDir(null),
+                getExternalDir(),
+                new java.io.File("/sdcard"),
+                new java.io.File("/storage/emulated/0")
+            };
+
+            java.io.File configFile = null;
+            for (java.io.File dir : dirs) {
+                if (dir != null && dir.exists() && dir.canWrite()) {
+                    configFile = new java.io.File(dir, "wifi_spoof_config.txt");
+                    break;
+                }
+            }
+
+            if (configFile == null) {
+                android.util.Log.e("WifiSpoof", "No writable directory found");
                 return;
             }
 
-            java.io.File configFile = new java.io.File(externalDir, "wifi_spoof_config.txt");
             java.io.FileWriter writer = new java.io.FileWriter(configFile);
 
             writer.write("enabled=" + switchEnabled.isChecked() + "\n");
@@ -179,8 +192,40 @@ public class MainActivity extends Activity {
             android.util.Log.d("WifiSpoof", "Config file saved to: " + configFile.getAbsolutePath());
             android.util.Log.d("WifiSpoof", "File size: " + configFile.length() + " bytes");
 
+            // 同时保存到多个位置，确保 hook 能读取到
+            saveToMultipleLocations(bssid, mac, ssid, ip, gateway, netmask, dns1, dns2);
+
         } catch (Exception e) {
             android.util.Log.e("WifiSpoof", "Failed to save config file", e);
+        }
+    }
+
+    // 保存到多个位置
+    private void saveToMultipleLocations(String bssid, String mac, String ssid, String ip,
+                                         String gateway, String netmask, String dns1, String dns2) {
+        String[] paths = {
+            "/sdcard/wifi_spoof_config.txt",
+            "/sdcard/Android/data/com.fakespoof.wifispoof/wifi_spoof_config.txt",
+            "/data/local/tmp/wifi_spoof_config.txt"
+        };
+
+        for (String path : paths) {
+            try {
+                java.io.FileWriter writer = new java.io.FileWriter(new java.io.File(path));
+                writer.write("enabled=" + switchEnabled.isChecked() + "\n");
+                writer.write("bssid=" + bssid + "\n");
+                writer.write("mac=" + mac + "\n");
+                writer.write("ssid=" + ssid + "\n");
+                writer.write("ip=" + ip + "\n");
+                writer.write("gateway=" + gateway + "\n");
+                writer.write("netmask=" + netmask + "\n");
+                writer.write("dns1=" + dns1 + "\n");
+                writer.write("dns2=" + dns2 + "\n");
+                writer.close();
+                android.util.Log.d("WifiSpoof", "Config saved to: " + path);
+            } catch (Exception e) {
+                android.util.Log.e("WifiSpoof", "Failed to save to " + path + ": " + e.getMessage());
+            }
         }
     }
 

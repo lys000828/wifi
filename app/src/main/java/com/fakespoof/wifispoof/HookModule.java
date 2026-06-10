@@ -1164,27 +1164,30 @@ public class HookModule implements IXposedHookLoadPackage {
     private void loadConfigFromExternalFile() throws Throwable {
         // 尝试多个可能的外部存储路径
         String[] possiblePaths = {
-            "/sdcard/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt",
-            "/storage/emulated/0/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt",
-            "/mnt/sdcard/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt"
+            "/sdcard/wifi_spoof_config.txt",
+            "/sdcard/Android/data/com.fakespoof.wifispoof/wifi_spoof_config.txt",
+            "/storage/emulated/0/wifi_spoof_config.txt",
+            "/storage/emulated/0/Android/data/com.fakespoof.wifispoof/wifi_spoof_config.txt",
+            "/data/local/tmp/wifi_spoof_config.txt",
+            "/sdcard/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt"
         };
 
         File configFile = null;
         for (String path : possiblePaths) {
             File f = new File(path);
-            XposedBridge.log(TAG + ": checking external path: " + path + " exists=" + f.exists());
-            if (f.exists()) {
+            XposedBridge.log(TAG + ": checking path: " + path + " exists=" + f.exists());
+            if (f.exists() && f.length() > 0) {
                 configFile = f;
-                XposedBridge.log(TAG + ": FOUND external config at: " + path);
+                XposedBridge.log(TAG + ": FOUND config at: " + path + " size=" + f.length());
                 break;
             }
         }
 
         if (configFile == null) {
-            throw new Exception("External config file not found");
+            throw new Exception("Config file not found in any location");
         }
 
-        XposedBridge.log(TAG + ": reading external config from: " + configFile.getAbsolutePath());
+        XposedBridge.log(TAG + ": reading config from: " + configFile.getAbsolutePath());
 
         java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(configFile));
         String line;
@@ -1212,7 +1215,7 @@ public class HookModule implements IXposedHookLoadPackage {
         }
         reader.close();
 
-        XposedBridge.log(TAG + ": external config loaded → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
+        XposedBridge.log(TAG + ": LOADED → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP + " GW=" + fakeGateway);
     }
 
     // 直接读取SharedPreferences XML文件
