@@ -646,122 +646,121 @@ public class HookModule implements IXposedHookLoadPackage {
                 if (type == 1) p.setResult(false); // TRANSPORT_CELLULAR
                 if (type == 3) p.setResult(false); // TRANSPORT_ETHERNET
             });
+        }
 
-            // getTransportInfo → 补充频率hook (Android 11+)
-            try {
-                findAndHookMethod("android.net.LinkProperties", cl, "getInterfaceName",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            String result = (String) param.getResult();
-                            if (result != null && (result.contains("wlan") || result.contains("eth"))) {
-                                param.setResult("wlan0");
-                            }
+        // ========== LinkProperties IP Hooks (所有Android版本) ==========
+        // getInterfaceName → wlan0
+        try {
+            findAndHookMethod("android.net.LinkProperties", cl, "getInterfaceName",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        String result = (String) param.getResult();
+                        if (result != null && (result.contains("wlan") || result.contains("eth"))) {
+                            param.setResult("wlan0");
                         }
-                    });
-                writeLog("✓ LinkProperties.getInterfaceName");
-            } catch (Throwable t) {
-                writeLog("✗ LinkProperties.getInterfaceName: " + t.getMessage());
-            }
+                    }
+                });
+            writeLog("✓ LinkProperties.getInterfaceName");
+        } catch (Throwable t) {
+            writeLog("✗ LinkProperties.getInterfaceName: " + t.getMessage());
+        }
 
-            // LinkProperties.getLinkAddresses → 伪造IP (Android 7+)
-            try {
-                findAndHookMethod("android.net.LinkProperties", cl, "getLinkAddresses",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                List<?> original = (List<?>) param.getResult();
-                                // 创建伪造的LinkAddress
-                                Class<?> linkAddrClass = Class.forName("android.net.LinkAddress");
-                                java.lang.reflect.Constructor<?> constructor = linkAddrClass.getConstructor(
-                                    InetAddress.class, int.class);
-                                InetAddress fakeAddr = InetAddress.getByName(fakeIP);
-                                Object fakeLinkAddr = constructor.newInstance(fakeAddr, 24); // /24 prefix
+        // getLinkAddresses → 伪造IP
+        try {
+            findAndHookMethod("android.net.LinkProperties", cl, "getLinkAddresses",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            Class<?> linkAddrClass = Class.forName("android.net.LinkAddress");
+                            java.lang.reflect.Constructor<?> constructor = linkAddrClass.getConstructor(
+                                InetAddress.class, int.class);
+                            InetAddress fakeAddr = InetAddress.getByName(fakeIP);
+                            Object fakeLinkAddr = constructor.newInstance(fakeAddr, 24);
 
-                                List<Object> newList = new ArrayList<>();
-                                newList.add(fakeLinkAddr);
-                                param.setResult(newList);
-                                writeLog("✓ LinkProperties.getLinkAddresses → " + fakeIP);
-                            } catch (Throwable e) {
-                                writeLog("✗ LinkProperties.getLinkAddresses hook failed: " + e.getMessage());
-                            }
+                            List<Object> newList = new ArrayList<>();
+                            newList.add(fakeLinkAddr);
+                            param.setResult(newList);
+                            writeLog("✓ LinkProperties.getLinkAddresses → " + fakeIP);
+                        } catch (Throwable e) {
+                            writeLog("✗ LinkProperties.getLinkAddresses hook failed: " + e.getMessage());
                         }
-                    });
-                writeLog("✓ LinkProperties.getLinkAddresses");
-            } catch (Throwable t) {
-                writeLog("✗ LinkProperties.getLinkAddresses: " + t.getMessage());
-            }
+                    }
+                });
+            writeLog("✓ LinkProperties.getLinkAddresses");
+        } catch (Throwable t) {
+            writeLog("✗ LinkProperties.getLinkAddresses: " + t.getMessage());
+        }
 
-            // LinkProperties.getDhcpServerAddress → 伪造DHCP服务器 (Android 7+)
-            try {
-                findAndHookMethod("android.net.LinkProperties", cl, "getDhcpServerAddress",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                InetAddress fakeServer = InetAddress.getByName(fakeGateway);
-                                param.setResult(fakeServer);
-                                writeLog("✓ LinkProperties.getDhcpServerAddress → " + fakeGateway);
-                            } catch (Throwable e) {
-                                writeLog("✗ hook failed: " + e.getMessage());
-                            }
+        // getDhcpServerAddress → 伪造DHCP服务器
+        try {
+            findAndHookMethod("android.net.LinkProperties", cl, "getDhcpServerAddress",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            InetAddress fakeServer = InetAddress.getByName(fakeGateway);
+                            param.setResult(fakeServer);
+                            writeLog("✓ LinkProperties.getDhcpServerAddress → " + fakeGateway);
+                        } catch (Throwable e) {
+                            writeLog("✗ hook failed: " + e.getMessage());
                         }
-                    });
-                writeLog("✓ LinkProperties.getDhcpServerAddress");
-            } catch (Throwable t) {
-                writeLog("✗ LinkProperties.getDhcpServerAddress: " + t.getMessage());
-            }
+                    }
+                });
+            writeLog("✓ LinkProperties.getDhcpServerAddress");
+        } catch (Throwable t) {
+            writeLog("✗ LinkProperties.getDhcpServerAddress: " + t.getMessage());
+        }
 
-            // LinkProperties.getDnsServers → 伪造DNS (Android 7+)
-            try {
-                findAndHookMethod("android.net.LinkProperties", cl, "getDnsServers",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                List<InetAddress> fakeDns = new ArrayList<>();
-                                fakeDns.add(InetAddress.getByName(fakeDNS1));
-                                fakeDns.add(InetAddress.getByName(fakeDNS2));
-                                param.setResult(fakeDns);
-                                writeLog("✓ LinkProperties.getDnsServers → " + fakeDNS1 + "," + fakeDNS2);
-                            } catch (Throwable e) {
-                                writeLog("✗ hook failed: " + e.getMessage());
-                            }
+        // getDnsServers → 伪造DNS
+        try {
+            findAndHookMethod("android.net.LinkProperties", cl, "getDnsServers",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            List<InetAddress> fakeDns = new ArrayList<>();
+                            fakeDns.add(InetAddress.getByName(fakeDNS1));
+                            fakeDns.add(InetAddress.getByName(fakeDNS2));
+                            param.setResult(fakeDns);
+                            writeLog("✓ LinkProperties.getDnsServers → " + fakeDNS1 + "," + fakeDNS2);
+                        } catch (Throwable e) {
+                            writeLog("✗ hook failed: " + e.getMessage());
                         }
-                    });
-                writeLog("✓ LinkProperties.getDnsServers");
-            } catch (Throwable t) {
-                writeLog("✗ LinkProperties.getDnsServers: " + t.getMessage());
-            }
+                    }
+                });
+            writeLog("✓ LinkProperties.getDnsServers");
+        } catch (Throwable t) {
+            writeLog("✗ LinkProperties.getDnsServers: " + t.getMessage());
+        }
 
-            // LinkProperties.getRoutes → 伪造路由 (Android 7+)
-            try {
-                findAndHookMethod("android.net.LinkProperties", cl, "getRoutes",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                Class<?> routeInfoClass = Class.forName("android.net.RouteInfo");
-                                java.lang.reflect.Constructor<?> constructor = routeInfoClass.getConstructor(
-                                    java.net.InetAddress.class, java.net.InetAddress.class, String.class);
-                                InetAddress fakeDest = InetAddress.getByName("0.0.0.0");
-                                InetAddress fakeGatewayAddr = InetAddress.getByName(fakeGateway);
-                                Object fakeRoute = constructor.newInstance(fakeDest, fakeGatewayAddr, "wlan0");
+        // getRoutes → 伪造路由网关
+        try {
+            findAndHookMethod("android.net.LinkProperties", cl, "getRoutes",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            Class<?> routeInfoClass = Class.forName("android.net.RouteInfo");
+                            java.lang.reflect.Constructor<?> constructor = routeInfoClass.getConstructor(
+                                java.net.InetAddress.class, java.net.InetAddress.class, String.class);
+                            InetAddress fakeDest = InetAddress.getByName("0.0.0.0");
+                            InetAddress fakeGatewayAddr = InetAddress.getByName(fakeGateway);
+                            Object fakeRoute = constructor.newInstance(fakeDest, fakeGatewayAddr, "wlan0");
 
-                                List<Object> newList = new ArrayList<>();
-                                newList.add(fakeRoute);
-                                param.setResult(newList);
-                                writeLog("✓ LinkProperties.getRoutes → gateway=" + fakeGateway);
-                            } catch (Throwable e) {
-                                writeLog("✗ hook failed: " + e.getMessage());
-                            }
+                            List<Object> newList = new ArrayList<>();
+                            newList.add(fakeRoute);
+                            param.setResult(newList);
+                            writeLog("✓ LinkProperties.getRoutes → gateway=" + fakeGateway);
+                        } catch (Throwable e) {
+                            writeLog("✗ hook failed: " + e.getMessage());
                         }
-                    });
-                writeLog("✓ LinkProperties.getRoutes");
-            } catch (Throwable t) {
-                writeLog("✗ LinkProperties.getRoutes: " + t.getMessage());
-            }
+                    }
+                });
+            writeLog("✓ LinkProperties.getRoutes");
+        } catch (Throwable t) {
+            writeLog("✗ LinkProperties.getRoutes: " + t.getMessage());
         }
     }
 
