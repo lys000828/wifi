@@ -12,7 +12,7 @@ public class SpoofConfig {
     private final SharedPreferences prefs;
 
     public SpoofConfig(Context context) {
-        prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_WORLD_READABLE);
+        prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
     }
 
     public boolean isEnabled() { return prefs.getBoolean(KEY_ENABLED, true); }
