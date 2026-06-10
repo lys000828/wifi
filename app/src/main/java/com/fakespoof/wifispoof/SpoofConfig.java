@@ -26,10 +26,29 @@ public class SpoofConfig {
 
     private final SharedPreferences prefs;
 
-    @SuppressWarnings("deprecation")
     public SpoofConfig(Context context) {
-        // MODE_WORLD_READABLE 让 XSharedPreferences 能从其他进程读取
-        prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_WORLD_READABLE);
+        prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        // 保存后手动设置文件权限为world-readable
+        makeWorldReadable(context);
+    }
+
+    private void makeWorldReadable(Context context) {
+        try {
+            java.io.File dataDir = new java.io.File(context.getApplicationInfo().dataDir);
+            dataDir.setExecutable(true, false);
+            dataDir.setReadable(true, false);
+            java.io.File prefsDir = new java.io.File(dataDir, "shared_prefs");
+            if (prefsDir.exists()) {
+                prefsDir.setExecutable(true, false);
+                prefsDir.setReadable(true, false);
+            }
+            java.io.File prefsFile = new java.io.File(prefsDir, PREF_NAME + ".xml");
+            if (prefsFile.exists()) {
+                prefsFile.setReadable(true, false);
+            }
+        } catch (Exception e) {
+            // ignore
+        }
     }
 
     // ========== 启用/禁用 ==========
