@@ -297,7 +297,9 @@ public class HookModule implements IXposedHookLoadPackage {
             writeLog("✗ SystemProperties.get: " + t.getMessage());
         }
 
-        // Hook sysfs MAC文件的读取 - 拦截FileInputStream读取 /sys/class/net/*/address
+        // Hook sysfs MAC文件的读取 - 多种方式拦截
+
+        // 1. FileInputStream(File) 构造函数
         try {
             findAndHookMethod(java.io.FileInputStream.class, "<init>", java.io.File.class, new XC_MethodHook() {
                 @Override
@@ -307,27 +309,45 @@ public class HookModule implements IXposedHookLoadPackage {
                         String path = file.getAbsolutePath();
                         if (path.matches(".*/sys/class/net/.*/address")) {
                             try {
-                                // 创建假MAC文件替换
-                                File tmp = File.createTempFile("fake_mac_", ".tmp");
-                                tmp.deleteOnExit();
-                                FileWriter fw = new FileWriter(tmp);
-                                fw.write(fakeMAC.toLowerCase() + "\n");
-                                fw.close();
+                                File tmp = createFakeMacFile();
                                 param.args[0] = tmp;
-                                writeLog("✓ FileInputStream redirected: " + path + " → fake MAC");
+                                writeLog("✓ FileInputStream(File) redirected: " + path);
                             } catch (Exception e) {
-                                writeLog("✗ FileInputStream redirect failed: " + e.getMessage());
+                                writeLog("✗ FileInputStream(File) redirect failed: " + e.getMessage());
                             }
                         }
                     }
                 }
             });
-            writeLog("✓ FileInputStream.<init> (sysfs MAC)");
+            writeLog("✓ FileInputStream.<init>(File)");
         } catch (Throwable t) {
-            writeLog("✗ FileInputStream.<init>: " + t.getMessage());
+            writeLog("✗ FileInputStream.<init>(File): " + t.getMessage());
         }
 
-        // 也hook FileReader，有些代码用FileReader直接读sysfs
+        // 2. FileInputStream(String) 构造函数 - 很多代码用字符串路径
+        try {
+            findAndHookMethod(java.io.FileInputStream.class, "<init>", String.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String path = (String) param.args[0];
+                    if (path != null && path.matches(".*/sys/class/net/.*/address")) {
+                        try {
+                            File tmp = createFakeMacFile();
+                            // 替换为File构造函数
+                            param.args[0] = tmp.getAbsolutePath();
+                            writeLog("✓ FileInputStream(String) redirected: " + path);
+                        } catch (Exception e) {
+                            writeLog("✗ FileInputStream(String) redirect failed: " + e.getMessage());
+                        }
+                    }
+                }
+            });
+            writeLog("✓ FileInputStream.<init>(String)");
+        } catch (Throwable t) {
+            writeLog("✗ FileInputStream.<init>(String): " + t.getMessage());
+        }
+
+        // 3. FileReader(File) 构造函数
         try {
             findAndHookMethod(java.io.FileReader.class, "<init>", java.io.File.class, new XC_MethodHook() {
                 @Override
@@ -337,26 +357,80 @@ public class HookModule implements IXposedHookLoadPackage {
                         String path = file.getAbsolutePath();
                         if (path.matches(".*/sys/class/net/.*/address")) {
                             try {
-                                File tmp = File.createTempFile("fake_mac_", ".tmp");
-                                tmp.deleteOnExit();
-                                FileWriter fw = new FileWriter(tmp);
-                                fw.write(fakeMAC.toLowerCase() + "\n");
-                                fw.close();
+                                File tmp = createFakeMacFile();
                                 param.args[0] = tmp;
-                                writeLog("✓ FileReader redirected: " + path + " → fake MAC");
+                                writeLog("✓ FileReader(File) redirected: " + path);
                             } catch (Exception e) {
-                                writeLog("✗ FileReader redirect failed: " + e.getMessage());
+                                writeLog("✗ FileReader(File) redirect failed: " + e.getMessage());
                             }
                         }
                     }
                 }
             });
-            writeLog("✓ FileReader.<init> (sysfs MAC)");
+            writeLog("✓ FileReader.<init>(File)");
         } catch (Throwable t) {
-            writeLog("✗ FileReader.<init>: " + t.getMessage());
+            writeLog("✗ FileReader.<init>(File): " + t.getMessage());
         }
 
-        // BufferedReader.readLine → 伪造sysfs MAC (兜底)
+        // 4. FileReader(String) 构造函数
+        try {
+            findAndHookMethod(java.io.FileReader.class, "<init>", String.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String path = (String) param.args[0];
+                    if (path != null && path.matches(".*/sys/class/net/.*/address")) {
+                        try {
+                            File tmp = createFakeMacFile();
+                            param.args[0] = tmp.getAbsolutePath();
+                            writeLog("✓ FileReader(String) redirected: " + path);
+                        } catch (Exception e) {
+                            writeLog("✗ FileReader(String) redirect failed: " + e.getMessage());
+                        }
+                    }
+                }
+            });
+            writeLog("✓ FileReader.<init>(String)");
+        } catch (Throwable t) {
+            writeLog("✗ FileReader.<init>(String): " + t.getMessage());
+        }
+
+        // 5. File.exists - 拦截sysfs文件存在性检查
+        try {
+            findAndHookMethod(java.io.File.class, "exists", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    File file = (File) param.thisObject;
+                    String path = file.getAbsolutePath();
+                    if (path.matches(".*/sys/class/net/.*/address")) {
+                        // 确保文件"存在"
+                        param.setResult(true);
+                    }
+                }
+            });
+            writeLog("✓ File.exists (sysfs)");
+        } catch (Throwable t) {
+            writeLog("✗ File.exists: " + t.getMessage());
+        }
+
+        // 6. File.length - 返回假MAC文件大小
+        try {
+            findAndHookMethod(java.io.File.class, "length", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    File file = (File) param.thisObject;
+                    String path = file.getAbsolutePath();
+                    if (path.matches(".*/sys/class/net/.*/address")) {
+                        // 返回假MAC的字节长度
+                        param.setResult((long)(fakeMAC.toLowerCase() + "\n").getBytes().length);
+                    }
+                }
+            });
+            writeLog("✓ File.length (sysfs)");
+        } catch (Throwable t) {
+            writeLog("✗ File.length: " + t.getMessage());
+        }
+
+        // 7. BufferedReader.readLine - 兜底方案
         try {
             findAndHookMethod(BufferedReader.class, "readLine", new XC_MethodHook() {
                 @Override
@@ -366,21 +440,86 @@ public class HookModule implements IXposedHookLoadPackage {
                     // 检查是否是MAC格式的行
                     String trimmed = original.trim().toLowerCase();
                     if (trimmed.matches("[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}")) {
+                        // 检查调用栈，判断是否来自读取sysfs的操作
                         StackTraceElement[] stack = Thread.currentThread().getStackTrace();
                         for (StackTraceElement frame : stack) {
                             String cls = frame.getClassName();
+                            String method = frame.getMethodName();
+                            // 检查是否来自网络相关类
                             if (cls.contains("NetworkInterface") || cls.contains("LinuxNet")
-                                || cls.contains("WifiInfo") || cls.contains("LinkProperties")) {
+                                || cls.contains("WifiInfo") || cls.contains("LinkProperties")
+                                || cls.contains("InetAddress") || cls.contains("SocketImpl")
+                                || method.contains("getHardwareAddress") || method.contains("readMac")) {
                                 param.setResult(fakeMAC.toLowerCase());
+                                writeLog("✓ BufferedReader.readLine intercepted MAC: " + original + " → " + fakeMAC);
                                 break;
                             }
                         }
                     }
                 }
             });
-            writeLog("✓ BufferedReader.readLine (sysfs MAC)");
+            writeLog("✓ BufferedReader.readLine (MAC interceptor)");
         } catch (Throwable t) {
             writeLog("✗ BufferedReader.readLine: " + t.getMessage());
+        }
+
+        // 8. Files.readAllBytes / Files.readAllLines (Java 7+ NIO)
+        try {
+            Class<?> filesClass = Class.forName("java.nio.file.Files");
+            // readAllBytes(Path)
+            findAndHookMethod(filesClass, "readAllBytes", java.nio.file.Path.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    java.nio.file.Path path = (java.nio.file.Path) param.args[0];
+                    if (path != null) {
+                        String pathStr = path.toString();
+                        if (pathStr.matches(".*/sys/class/net/.*/address")) {
+                            param.setResult((fakeMAC.toLowerCase() + "\n").getBytes());
+                            writeLog("✓ Files.readAllBytes intercepted: " + pathStr);
+                        }
+                    }
+                }
+            });
+            writeLog("✓ Files.readAllBytes (NIO)");
+        } catch (Throwable t) {
+            writeLog("✗ Files.readAllBytes: " + t.getMessage());
+        }
+
+        // 9. Files.readAllLines (Java 7+ NIO)
+        try {
+            Class<?> filesClass = Class.forName("java.nio.file.Files");
+            findAndHookMethod(filesClass, "readAllLines", java.nio.file.Path.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    java.nio.file.Path path = (java.nio.file.Path) param.args[0];
+                    if (path != null) {
+                        String pathStr = path.toString();
+                        if (pathStr.matches(".*/sys/class/net/.*/address")) {
+                            java.util.List<String> lines = new java.util.ArrayList<>();
+                            lines.add(fakeMAC.toLowerCase());
+                            param.setResult(lines);
+                            writeLog("✓ Files.readAllLines intercepted: " + pathStr);
+                        }
+                    }
+                }
+            });
+            writeLog("✓ Files.readAllLines (NIO)");
+        } catch (Throwable t) {
+            writeLog("✗ Files.readAllLines: " + t.getMessage());
+        }
+
+        // 10. Scanner - 有些代码用Scanner读取文件
+        try {
+            findAndHookMethod(java.util.Scanner.class, "<init>", java.io.InputStream.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    // Scanner初始化后，检查是否有sysfs MAC在缓冲区
+                    // 这个比较难hook，先跳过
+                }
+            });
+            writeLog("✓ Scanner.<init> (placeholder)");
+        } catch (Throwable t) {
+            writeLog("✗ Scanner.<init>: " + t.getMessage());
         }
     }
 
@@ -604,6 +743,16 @@ public class HookModule implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             // 忽略
         }
+    }
+
+    // 创建包含假MAC的临时文件
+    private File createFakeMacFile() throws Exception {
+        File tmp = File.createTempFile("fake_mac_", ".tmp");
+        tmp.deleteOnExit();
+        FileWriter fw = new FileWriter(tmp);
+        fw.write(fakeMAC.toLowerCase() + "\n");
+        fw.close();
+        return tmp;
     }
 
     // IP字符串转int
