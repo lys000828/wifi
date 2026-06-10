@@ -26,8 +26,10 @@ public class SpoofConfig {
 
     private final SharedPreferences prefs;
 
+    @SuppressWarnings("deprecation")
     public SpoofConfig(Context context) {
-        prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        // MODE_WORLD_READABLE 让 XSharedPreferences 能从其他进程读取
+        prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_WORLD_READABLE);
     }
 
     // ========== 启用/禁用 ==========

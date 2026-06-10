@@ -21,6 +21,7 @@ import java.util.List;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
@@ -1102,7 +1103,44 @@ public class HookModule implements IXposedHookLoadPackage {
     private void loadConfig(ClassLoader cl, String packageName) {
         XposedBridge.log(TAG + ": loadConfig START for package: " + packageName);
 
-        // 方法1: 从外部存储配置文件读取（最可靠）
+        // 方法1: XSharedPreferences（Xposed专用跨进程读取机制）
+        try {
+            XSharedPreferences xPrefs = new XSharedPreferences(PKG_SELF, PREF_NAME);
+            xPrefs.makeWorldReadable();
+            xPrefs.reload();
+
+            if (xPrefs.getFile().exists() && xPrefs.getFile().canRead()) {
+                enabled = xPrefs.getBoolean("spoof_enabled", true);
+                fakeBSSID = xPrefs.getString("fake_bssid", "AA:BB:CC:DD:EE:FF");
+                fakeMAC = xPrefs.getString("fake_mac", "AA:BB:CC:DD:EE:FF");
+                String rawSSID = xPrefs.getString("fake_ssid", "\"MyHomeWiFi\"");
+                fakeSSID = rawSSID.replace("\"", "");
+
+                fakeIP = xPrefs.getString("fake_ip", "192.168.1.100");
+                fakeGateway = xPrefs.getString("fake_gateway", "192.168.1.1");
+                fakeNetmask = xPrefs.getString("fake_netmask", "255.255.255.0");
+                fakeDNS1 = xPrefs.getString("fake_dns1", "8.8.8.8");
+                fakeDNS2 = xPrefs.getString("fake_dns2", "8.8.4.4");
+
+                fakeFrequency = xPrefs.getInt("fake_frequency", 5180);
+                fakeLinkSpeed = xPrefs.getInt("fake_link_speed", 72);
+                fakeRSSI = xPrefs.getInt("fake_rssi", -45);
+
+                writeLog("Config loaded via XSharedPreferences");
+                writeLog("  BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " SSID=" + fakeSSID);
+                writeLog("  IP=" + fakeIP + " GW=" + fakeGateway + " DNS=" + fakeDNS1);
+                XposedBridge.log(TAG + ": XSharedPreferences OK → BSSID=" + fakeBSSID + " IP=" + fakeIP);
+                return;
+            } else {
+                writeLog("XSharedPreferences file not readable, file=" + xPrefs.getFile().getAbsolutePath());
+                XposedBridge.log(TAG + ": XSharedPreferences file not readable: " + xPrefs.getFile().getAbsolutePath());
+            }
+        } catch (Throwable t) {
+            writeLog("XSharedPreferences failed: " + t.getMessage());
+            XposedBridge.log(TAG + ": XSharedPreferences failed: " + t.getMessage());
+        }
+
+        // 方法2: 从外部存储配置文件读取（备用）
         try {
             loadConfigFromExternalFile();
             writeLog("Config loaded from external file successfully");
@@ -1113,7 +1151,7 @@ public class HookModule implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": External load failed: " + t.getMessage());
         }
 
-        // 方法2: 直接读取SharedPreferences XML文件
+        // 方法3: 直接读取SharedPreferences XML文件
         try {
             loadConfigFromFile();
             writeLog("Config loaded from XML file successfully");
@@ -1124,7 +1162,7 @@ public class HookModule implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": XML load failed: " + t.getMessage());
         }
 
-        // 方法3: 通过createPackageContext
+        // 方法4: 通过createPackageContext
         try {
             Object at = XposedHelpers.callStaticMethod(
                 Class.forName("android.app.ActivityThread"), "currentActivityThread");
@@ -1156,7 +1194,8 @@ public class HookModule implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             writeLog("createPackageContext failed: " + t.getMessage());
             XposedBridge.log(TAG + ": createPackageContext failed: " + t.getMessage());
-            XposedBridge.log(TAG + ": using default values");
+            XposedBridge.log(TAG + ": ALL methods failed, using default values");
+            writeLog("⚠️ ALL CONFIG METHODS FAILED - using defaults!");
         }
     }
 

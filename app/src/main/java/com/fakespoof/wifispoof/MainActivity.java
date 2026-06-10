@@ -49,6 +49,7 @@ public class MainActivity extends Activity {
         Button btnLog = findViewById(R.id.btn_log);
 
         loadConfig();
+        makePrefsWorldReadable();
 
         btnSave.setOnClickListener(v -> saveConfig());
         btnRandom.setOnClickListener(v -> generateRandom());
@@ -132,6 +133,9 @@ public class MainActivity extends Activity {
 
         // 同时写入到外部存储的配置文件（更可靠）
         saveConfigToFile(bssid, mac, ssid, ip, gateway, netmask, dns1, dns2);
+
+        // 确保SharedPreferences文件权限为world-readable（让XSharedPreferences能读取）
+        makePrefsWorldReadable();
 
         // 验证保存是否成功
         SpoofConfig verifyConfig = new SpoofConfig(this);
@@ -280,6 +284,28 @@ public class MainActivity extends Activity {
         } else {
             tvStatus.setText("已禁用");
             tvStatus.setTextColor(0xFFF44336);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void makePrefsWorldReadable() {
+        try {
+            // 设置SharedPreferences文件为world-readable
+            File prefsDir = new File(getApplicationInfo().dataDir, "shared_prefs");
+            File prefsFile = new File(prefsDir, "wifi_spoof_config.xml");
+            if (prefsFile.exists()) {
+                prefsFile.setReadable(true, false);
+                prefsFile.setWritable(true, false);
+                prefsDir.setExecutable(true, false);
+                prefsDir.setReadable(true, false);
+                // 也设置data目录
+                File dataDir = new File(getApplicationInfo().dataDir);
+                dataDir.setExecutable(true, false);
+                dataDir.setReadable(true, false);
+                android.util.Log.d("WifiSpoof", "Prefs file permissions set: " + prefsFile.getAbsolutePath());
+            }
+        } catch (Exception e) {
+            android.util.Log.e("WifiSpoof", "Failed to set prefs permissions: " + e.getMessage());
         }
     }
 
