@@ -297,12 +297,16 @@ public class HookModule implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     NetworkInterface ni = (NetworkInterface) param.thisObject;
-                    if ("wlan0".equals(ni.getName())) {
+                    String name = ni.getName();
+                    // 检查是否是WiFi相关接口
+                    if (name != null && (name.equals("wlan0") || name.contains("wlan")
+                            || name.contains("wifi") || name.contains("eth"))) {
                         try {
                             InetAddress fakeAddr = InetAddress.getByName(fakeIP);
                             List<InetAddress> addrs = new ArrayList<>();
                             addrs.add(fakeAddr);
                             param.setResult(java.util.Collections.enumeration(addrs));
+                            writeLog("✓ getInetAddresses hooked for " + name + " → " + fakeIP);
                         } catch (Exception e) {
                             // 忽略
                         }
@@ -312,6 +316,33 @@ public class HookModule implements IXposedHookLoadPackage {
             writeLog("✓ NetworkInterface.getInetAddresses");
         } catch (Throwable t) {
             writeLog("✗ NetworkInterface.getInetAddresses: " + t.getMessage());
+        }
+
+        // getInterfaceAddresses → 伪造IP (Android 23+)
+        try {
+            findAndHookMethod(NetworkInterface.class, "getInterfaceAddresses", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    NetworkInterface ni = (NetworkInterface) param.thisObject;
+                    String name = ni.getName();
+                    if (name != null && (name.equals("wlan0") || name.contains("wlan")
+                            || name.contains("wifi") || name.contains("eth"))) {
+                        try {
+                            java.net.InterfaceAddress fakeAddr = new java.net.InterfaceAddress(
+                                InetAddress.getByName(fakeIP));
+                            List<java.net.InterfaceAddress> addrs = new ArrayList<>();
+                            addrs.add(fakeAddr);
+                            param.setResult(addrs);
+                            writeLog("✓ getInterfaceAddresses hooked for " + name);
+                        } catch (Exception e) {
+                            // 忽略
+                        }
+                    }
+                }
+            });
+            writeLog("✓ NetworkInterface.getInterfaceAddresses");
+        } catch (Throwable t) {
+            writeLog("✗ NetworkInterface.getInterfaceAddresses: " + t.getMessage());
         }
     }
 
@@ -631,6 +662,105 @@ public class HookModule implements IXposedHookLoadPackage {
                 writeLog("✓ LinkProperties.getInterfaceName");
             } catch (Throwable t) {
                 writeLog("✗ LinkProperties.getInterfaceName: " + t.getMessage());
+            }
+
+            // LinkProperties.getLinkAddresses → 伪造IP (Android 7+)
+            try {
+                findAndHookMethod("android.net.LinkProperties", cl, "getLinkAddresses",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                List<?> original = (List<?>) param.getResult();
+                                // 创建伪造的LinkAddress
+                                Class<?> linkAddrClass = Class.forName("android.net.LinkAddress");
+                                java.lang.reflect.Constructor<?> constructor = linkAddrClass.getConstructor(
+                                    InetAddress.class, int.class);
+                                InetAddress fakeAddr = InetAddress.getByName(fakeIP);
+                                Object fakeLinkAddr = constructor.newInstance(fakeAddr, 24); // /24 prefix
+
+                                List<Object> newList = new ArrayList<>();
+                                newList.add(fakeLinkAddr);
+                                param.setResult(newList);
+                                writeLog("✓ LinkProperties.getLinkAddresses → " + fakeIP);
+                            } catch (Throwable e) {
+                                writeLog("✗ LinkProperties.getLinkAddresses hook failed: " + e.getMessage());
+                            }
+                        }
+                    });
+                writeLog("✓ LinkProperties.getLinkAddresses");
+            } catch (Throwable t) {
+                writeLog("✗ LinkProperties.getLinkAddresses: " + t.getMessage());
+            }
+
+            // LinkProperties.getDhcpServerAddress → 伪造DHCP服务器 (Android 7+)
+            try {
+                findAndHookMethod("android.net.LinkProperties", cl, "getDhcpServerAddress",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                InetAddress fakeServer = InetAddress.getByName(fakeGateway);
+                                param.setResult(fakeServer);
+                                writeLog("✓ LinkProperties.getDhcpServerAddress → " + fakeGateway);
+                            } catch (Throwable e) {
+                                writeLog("✗ hook failed: " + e.getMessage());
+                            }
+                        }
+                    });
+                writeLog("✓ LinkProperties.getDhcpServerAddress");
+            } catch (Throwable t) {
+                writeLog("✗ LinkProperties.getDhcpServerAddress: " + t.getMessage());
+            }
+
+            // LinkProperties.getDnsServers → 伪造DNS (Android 7+)
+            try {
+                findAndHookMethod("android.net.LinkProperties", cl, "getDnsServers",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                List<InetAddress> fakeDns = new ArrayList<>();
+                                fakeDns.add(InetAddress.getByName(fakeDNS1));
+                                fakeDns.add(InetAddress.getByName(fakeDNS2));
+                                param.setResult(fakeDns);
+                                writeLog("✓ LinkProperties.getDnsServers → " + fakeDNS1 + "," + fakeDNS2);
+                            } catch (Throwable e) {
+                                writeLog("✗ hook failed: " + e.getMessage());
+                            }
+                        }
+                    });
+                writeLog("✓ LinkProperties.getDnsServers");
+            } catch (Throwable t) {
+                writeLog("✗ LinkProperties.getDnsServers: " + t.getMessage());
+            }
+
+            // LinkProperties.getRoutes → 伪造路由 (Android 7+)
+            try {
+                findAndHookMethod("android.net.LinkProperties", cl, "getRoutes",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Class<?> routeInfoClass = Class.forName("android.net.RouteInfo");
+                                java.lang.reflect.Constructor<?> constructor = routeInfoClass.getConstructor(
+                                    java.net.InetAddress.class, java.net.InetAddress.class, String.class);
+                                InetAddress fakeDest = InetAddress.getByName("0.0.0.0");
+                                InetAddress fakeGatewayAddr = InetAddress.getByName(fakeGateway);
+                                Object fakeRoute = constructor.newInstance(fakeDest, fakeGatewayAddr, "wlan0");
+
+                                List<Object> newList = new ArrayList<>();
+                                newList.add(fakeRoute);
+                                param.setResult(newList);
+                                writeLog("✓ LinkProperties.getRoutes → gateway=" + fakeGateway);
+                            } catch (Throwable e) {
+                                writeLog("✗ hook failed: " + e.getMessage());
+                            }
+                        }
+                    });
+                writeLog("✓ LinkProperties.getRoutes");
+            } catch (Throwable t) {
+                writeLog("✗ LinkProperties.getRoutes: " + t.getMessage());
             }
         }
     }
