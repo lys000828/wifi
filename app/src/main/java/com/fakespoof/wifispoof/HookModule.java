@@ -92,7 +92,11 @@ public class HookModule implements IXposedHookLoadPackage {
     private void hookAppLayer(ClassLoader cl) {
         // getConnectionInfo → 返回伪造WifiInfo
         hook("android.net.wifi.WifiManager", cl, "getConnectionInfo", p -> {
-            p.setResult(buildFakeWifiInfo());
+            WifiInfo fake = buildFakeWifiInfo();
+            if (fake != null) {
+                p.setResult(fake);
+            }
+            // 如果fake为null，保持原返回值，由各getter hook返回伪造值
         });
 
         // getBSSID
@@ -293,20 +297,83 @@ public class HookModule implements IXposedHookLoadPackage {
             writeLog("✗ SystemProperties.get: " + t.getMessage());
         }
 
-        // BufferedReader.readLine → 伪造sysfs MAC
+        // Hook sysfs MAC文件的读取 - 拦截FileInputStream读取 /sys/class/net/*/address
+        try {
+            findAndHookMethod(java.io.FileInputStream.class, "<init>", java.io.File.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    File file = (File) param.args[0];
+                    if (file != null) {
+                        String path = file.getAbsolutePath();
+                        if (path.matches(".*/sys/class/net/.*/address")) {
+                            try {
+                                // 创建假MAC文件替换
+                                File tmp = File.createTempFile("fake_mac_", ".tmp");
+                                tmp.deleteOnExit();
+                                FileWriter fw = new FileWriter(tmp);
+                                fw.write(fakeMAC.toLowerCase() + "\n");
+                                fw.close();
+                                param.args[0] = tmp;
+                                writeLog("✓ FileInputStream redirected: " + path + " → fake MAC");
+                            } catch (Exception e) {
+                                writeLog("✗ FileInputStream redirect failed: " + e.getMessage());
+                            }
+                        }
+                    }
+                }
+            });
+            writeLog("✓ FileInputStream.<init> (sysfs MAC)");
+        } catch (Throwable t) {
+            writeLog("✗ FileInputStream.<init>: " + t.getMessage());
+        }
+
+        // 也hook FileReader，有些代码用FileReader直接读sysfs
+        try {
+            findAndHookMethod(java.io.FileReader.class, "<init>", java.io.File.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    File file = (File) param.args[0];
+                    if (file != null) {
+                        String path = file.getAbsolutePath();
+                        if (path.matches(".*/sys/class/net/.*/address")) {
+                            try {
+                                File tmp = File.createTempFile("fake_mac_", ".tmp");
+                                tmp.deleteOnExit();
+                                FileWriter fw = new FileWriter(tmp);
+                                fw.write(fakeMAC.toLowerCase() + "\n");
+                                fw.close();
+                                param.args[0] = tmp;
+                                writeLog("✓ FileReader redirected: " + path + " → fake MAC");
+                            } catch (Exception e) {
+                                writeLog("✗ FileReader redirect failed: " + e.getMessage());
+                            }
+                        }
+                    }
+                }
+            });
+            writeLog("✓ FileReader.<init> (sysfs MAC)");
+        } catch (Throwable t) {
+            writeLog("✗ FileReader.<init>: " + t.getMessage());
+        }
+
+        // BufferedReader.readLine → 伪造sysfs MAC (兜底)
         try {
             findAndHookMethod(BufferedReader.class, "readLine", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-                    for (StackTraceElement frame : stack) {
-                        String cls = frame.getClassName();
-                        if (cls.contains("NetworkInterface") || cls.contains("LinuxNet")) {
-                            String original = (String) param.getResult();
-                            if (original != null && original.trim().toLowerCase().matches("[0-9a-f:]{17}")) {
+                    String original = (String) param.getResult();
+                    if (original == null) return;
+                    // 检查是否是MAC格式的行
+                    String trimmed = original.trim().toLowerCase();
+                    if (trimmed.matches("[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}")) {
+                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+                        for (StackTraceElement frame : stack) {
+                            String cls = frame.getClassName();
+                            if (cls.contains("NetworkInterface") || cls.contains("LinuxNet")
+                                || cls.contains("WifiInfo") || cls.contains("LinkProperties")) {
                                 param.setResult(fakeMAC.toLowerCase());
+                                break;
                             }
-                            break;
                         }
                     }
                 }
@@ -314,31 +381,6 @@ public class HookModule implements IXposedHookLoadPackage {
             writeLog("✓ BufferedReader.readLine (sysfs MAC)");
         } catch (Throwable t) {
             writeLog("✗ BufferedReader.readLine: " + t.getMessage());
-        }
-
-        // File构造 → 替换sysfs路径
-        try {
-            findAndHookMethod(java.io.File.class, "<init>", String.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    String path = (String) param.args[0];
-                    if (path != null && path.contains("/sys/class/net/") && path.contains("/address")) {
-                        try {
-                            java.io.File tmp = java.io.File.createTempFile("fake_mac", ".tmp");
-                            tmp.deleteOnExit();
-                            java.io.FileWriter fw = new java.io.FileWriter(tmp);
-                            fw.write(fakeMAC.toLowerCase());
-                            fw.close();
-                            param.args[0] = tmp.getAbsolutePath();
-                        } catch (Exception e) {
-                            // 忽略
-                        }
-                    }
-                }
-            });
-            writeLog("✓ File.<init> (sysfs path)");
-        } catch (Throwable t) {
-            writeLog("✗ File.<init>: " + t.getMessage());
         }
     }
 
@@ -358,17 +400,23 @@ public class HookModule implements IXposedHookLoadPackage {
                 fakeDhcp.serverAddress = ipToInt(fakeGateway);
                 fakeDhcp.leaseDuration = 86400;
                 p.setResult(fakeDhcp);
-            } catch (Exception e) {
+                writeLog("✓ getDhcpInfo → fake (netmask=255.255.255.0)");
+            } catch (Throwable e) {
+                writeLog("✗ getDhcpInfo hook failed: " + e.getMessage());
                 XposedBridge.log(TAG + ": build fake DhcpInfo failed: " + e.getMessage());
             }
         });
 
-        // NetworkCapabilities.getTransportInfo → 返回伪造WifiInfo (Android 11+)
+        // NetworkCapabilities.getTransportInfo → 返回伪造WifiInfo (Android 12+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             hook("android.net.NetworkCapabilities", cl, "getTransportInfo", p -> {
                 Object result = p.getResult();
                 if (result instanceof WifiInfo) {
-                    p.setResult(buildFakeWifiInfo());
+                    WifiInfo fake = buildFakeWifiInfo();
+                    if (fake != null) {
+                        p.setResult(fake);
+                    }
+                    // 即使fake为null也不返回原值，避免真实频率泄漏
                 }
             });
 
@@ -379,6 +427,23 @@ public class HookModule implements IXposedHookLoadPackage {
                 if (type == 1) p.setResult(false); // TRANSPORT_CELLULAR
                 if (type == 3) p.setResult(false); // TRANSPORT_ETHERNET
             });
+
+            // getTransportInfo → 补充频率hook (Android 11+)
+            try {
+                findAndHookMethod("android.net.LinkProperties", cl, "getInterfaceName",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            String result = (String) param.getResult();
+                            if (result != null && (result.contains("wlan") || result.contains("eth"))) {
+                                param.setResult("wlan0");
+                            }
+                        }
+                    });
+                writeLog("✓ LinkProperties.getInterfaceName");
+            } catch (Throwable t) {
+                writeLog("✗ LinkProperties.getInterfaceName: " + t.getMessage());
+            }
         }
     }
 
@@ -386,7 +451,7 @@ public class HookModule implements IXposedHookLoadPackage {
     // 5. WiFi扫描 - getScanResults / ScanResult
     // ====================================================================
     private void hookScanResults(ClassLoader cl) {
-        // getScanResults → 注入伪造AP
+        // getScanResults → 注入伪造AP + 伪造所有结果频率
         hook("android.net.wifi.WifiManager", cl, "getScanResults", p -> {
             @SuppressWarnings("unchecked")
             List<ScanResult> original = (List<ScanResult>) p.getResult();
@@ -401,7 +466,10 @@ public class HookModule implements IXposedHookLoadPackage {
                     sr.level = fakeRSSI;
                     sr.capabilities = "[WPA2-PSK-CCMP][ESS]";
                     found = true;
-                    break;
+                }
+                // 伪造所有结果的频率，防止通过其他AP获取真实频率
+                if (sr.frequency <= 0 || sr.frequency > 6000) {
+                    sr.frequency = fakeFrequency;
                 }
             }
 
@@ -413,6 +481,22 @@ public class HookModule implements IXposedHookLoadPackage {
 
             p.setResult(original);
         });
+
+        // ScanResult.frequency字段 - 通过getter hook
+        try {
+            findAndHookMethod(ScanResult.class, "getFrequency", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    ScanResult sr = (ScanResult) param.thisObject;
+                    if (fakeBSSID.equalsIgnoreCase(sr.BSSID)) {
+                        param.setResult(fakeFrequency);
+                    }
+                }
+            });
+            writeLog("✓ ScanResult.getFrequency");
+        } catch (Throwable t) {
+            writeLog("✗ ScanResult.getFrequency: " + t.getMessage());
+        }
 
         // startScan → 返回true
         hook("android.net.wifi.WifiManager", cl, "startScan", p -> p.setResult(true));
@@ -433,8 +517,9 @@ public class HookModule implements IXposedHookLoadPackage {
             java.lang.reflect.Method allocate = unsafeClass.getMethod("allocateInstance", Class.class);
             WifiInfo info = (WifiInfo) allocate.invoke(unsafe, WifiInfo.class);
 
-            // 通过反射设置字段
+            // 通过反射设置字段 - 遍历所有可能的字段名
             setField(info, "mBssid", fakeBSSID);
+            setField(info, "mBSSID", fakeBSSID);
             setField(info, "mMacAddress", fakeMAC);
             setField(info, "mSSID", "\"" + fakeSSID + "\"");
             setIntField(info, "mNetworkId", fakeNetworkId);
@@ -442,10 +527,14 @@ public class HookModule implements IXposedHookLoadPackage {
             setIntField(info, "mLinkSpeed", fakeLinkSpeed);
             setIntField(info, "mFrequency", fakeFrequency);
             setIntField(info, "mIpAddress", ipToInt(fakeIP));
+            // Android 12+ 可能有不同的字段名
+            setField(info, "mWifiStandard", 4); // IEEE_802_11_AC
+            setField(info, "mSecurityType", 3);  // WPA2_PSK
 
             return info;
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": buildFakeWifiInfo failed: " + t.getMessage());
+            // 失败时返回null，但各getter已单独hook，仍能返回伪造值
             return null;
         }
     }
