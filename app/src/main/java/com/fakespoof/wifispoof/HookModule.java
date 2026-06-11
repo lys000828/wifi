@@ -4,7 +4,6 @@ import android.net.wifi.ScanResult;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
-
 import android.os.Environment;
 
 import java.io.BufferedReader;
@@ -16,8 +15,11 @@ import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -26,23 +28,18 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 import static de.robv.android.xposed.XposedHelpers.findAndHookMethod;
-import static de.robv.android.xposed.XposedHelpers.getObjectField;
-import static de.robv.android.xposed.XposedHelpers.setObjectField;
-import static de.robv.android.xposed.XposedHelpers.setIntField;
-import static de.robv.android.xposed.XposedHelpers.getIntField;
 
 public class HookModule implements IXposedHookLoadPackage {
     private static final String TAG = "WifiSpoof";
     private static final String PREF_NAME = "wifi_spoof_config";
     private static final String PKG_SELF = "com.fakespoof.wifispoof";
+    private static final String LOG_FILE = "/sdcard/wifispoof_hook.log";
 
-    // 伪造值
     private String fakeBSSID = "AA:BB:CC:DD:EE:FF";
     private String fakeMAC = "AA:BB:CC:DD:EE:FF";
-    private String fakeSSID = "MyHomeWiFi";  // 不带引号
+    private String fakeSSID = "MyHomeWiFi";
     private boolean enabled = true;
 
-    // 伪造网络参数 - 从SharedPreferences读取
     private String fakeIP = "192.168.1.100";
     private String fakeGateway = "192.168.1.1";
     private String fakeNetmask = "255.255.255.0";
@@ -53,183 +50,143 @@ public class HookModule implements IXposedHookLoadPackage {
     private int fakeRSSI = -45;
     private int fakeNetworkId = 1;
 
-    // 日志文件路径
-    private static final String LOG_FILE = "/sdcard/wifispoof_hook.log";
+    private static final Set<String> ROOT_PATHS = new HashSet<>(Arrays.asList(
+        "/system/app/Superuser.apk", "/system/app/Superuser",
+        "/system/xbin/su", "/system/bin/su", "/sbin/su",
+        "/data/local/xbin/su", "/data/local/bin/su", "/system/sd/xbin/su",
+        "/system/bin/failsafe/su", "/data/local/su", "/su/bin/su", "/su/bin", "/su",
+        "/sbin/.magisk", "/data/adb/magisk", "/data/adb/modules",
+        "/system/bin/magisk", "/system/xbin/magisk",
+        "/cache/.disable_magisk", "/dev/.magisk.unblock",
+        "/data/adb/magisk.img", "/data/adb/magisk.db", "/data/magisk.apk",
+        "/system/bin/daemonsu", "/system/etc/init.d/99SuperSUDaemon",
+        "/system/xbin/daemonsu", "/system/xbin/busybox",
+        "/system/bin/.ext/.su", "/system/usr/we-need-root/",
+        "/data/adb/ksu", "/data/adb/ksud", "/data/adb/lspd"
+    ));
 
-    // 系统进程列表 - hook这些会导致网络问题
+    private static final Set<String> ROOT_PACKAGES = new HashSet<>(Arrays.asList(
+        "com.topjohnwu.magisk", "io.github.vvb2060.magisk", "com.fox2code.mmm",
+        "com.noshufou.android.su", "com.noshufou.android.su.elite",
+        "eu.chainfire.supersu", "com.koushikdutta.superuser",
+        "com.thirdparty.superuser", "com.yellowes.su",
+        "com.kingroot.kinguser", "com.kingo.root",
+        "com.zhiqupk.root.global", "com.smedialink.oneclickroot",
+        "com.alephzain.framaroot", "de.robv.android.xposed.installer",
+        "org.lsposed.manager", "org.meowcat.edxposed.manager",
+        "com.solohsu.android.edxp.manager", "io.github.lsposed.manager",
+        "me.weishu.exp", "com.saurik.substrate", "de.robv.android.xposed",
+        "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
+        "com.zachspong.temprootremovejb", "com.amphoras.hidemyroot",
+        "com.amphoras.hidemyrootadd", "com.formyhm.hiderootPremium",
+        "com.formyhm.hideroot"
+    ));
+
     private static final String[] SYSTEM_PACKAGES = {
-        "android",
-        "com.android.wifi",
-        "com.android.systemui",
-        "com.android.settings",
-        "com.android.providers.settings",
-        "com.android.providers.media",
-        "com.android.providers.downloads",
-        "system_server",
-        "com.android.server",
-        "com.android.phone",
-        "com.android.bluetooth",
-        "com.android.nfc",
-        "com.android.shell",
-        "com.android.emergency"
+        "android", "com.android.wifi", "com.android.systemui",
+        "com.android.settings", "com.android.providers.settings",
+        "com.android.providers.media", "com.android.providers.downloads",
+        "system_server", "com.android.server", "com.android.phone",
+        "com.android.bluetooth", "com.android.nfc",
+        "com.android.shell", "com.android.emergency"
     };
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (lpparam.packageName.equals(PKG_SELF)) return;
 
-        // 清空旧日志
-        writeLog("=== WifiSpoof Hook Log ===");
+        writeLog("=== WifiSpoof Hook ===");
         writeLog("Package: " + lpparam.packageName);
-        writeLog("Time: " + System.currentTimeMillis());
 
-        // 检查是否是系统进程 - 如果是则跳过，避免影响系统功能
         if (isSystemPackage(lpparam.packageName)) {
-            writeLog("⚠️ SKIP system package: " + lpparam.packageName);
-            XposedBridge.log(TAG + ": SKIP system package " + lpparam.packageName + " (may cause network issues)");
+            writeLog("SKIP system: " + lpparam.packageName);
             return;
         }
 
         loadConfig(lpparam.classLoader, lpparam.packageName);
         if (!enabled) {
-            writeLog("STATUS: DISABLED, skip " + lpparam.packageName);
-            XposedBridge.log(TAG + ": disabled, skip " + lpparam.packageName);
+            writeLog("DISABLED, skip " + lpparam.packageName);
             return;
         }
 
-        writeLog("Config: BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " SSID=" + fakeSSID);
-        writeLog("Config: IP=" + fakeIP + " GW=" + fakeGateway + " DNS=" + fakeDNS1 + "," + fakeDNS2);
-        XposedBridge.log(TAG + ": hooks → " + lpparam.packageName
-            + " [" + fakeBSSID + " | " + fakeMAC + " | " + fakeSSID + "]");
+        writeLog("Config: MAC=" + fakeMAC + " BSSID=" + fakeBSSID + " SSID=" + fakeSSID + " IP=" + fakeIP);
 
-        // 5个层面全部hook
-        writeLog("--- Starting hooks ---");
-        hookAppLayer(lpparam.classLoader);       // 1. App层API
-        hookJavaLayer(lpparam.classLoader);      // 2. Java层
-        hookSystemProperties(lpparam.classLoader); // 3. 系统属性
-        hookNetworkLayer(lpparam.classLoader);   // 4. 底层网络
-        hookScanResults(lpparam.classLoader);    // 5. WiFi扫描
+        hookWifiApi(lpparam.classLoader);
+        hookNetworkInterface(lpparam.classLoader);
+        hookNetworkLayer(lpparam.classLoader);
+        hookScanResults(lpparam.classLoader);
+        hookSystemProperties(lpparam.classLoader);
+        hookFileSystem(lpparam.classLoader);
+        hookCommandExecution(lpparam.classLoader);
+        hookRootHiding(lpparam.classLoader);
+        hookMacLeaks(lpparam.classLoader);
 
-        writeLog("--- All hooks installed ---");
-        XposedBridge.log(TAG + ": all 5 layers hooked for " + lpparam.packageName);
+        writeLog("--- All hooks done ---");
+        XposedBridge.log(TAG + ": hooked " + lpparam.packageName);
     }
 
-    // 检查是否是系统进程
     private boolean isSystemPackage(String packageName) {
         if (packageName == null) return true;
-
-        // 检查是否在系统进程列表中
         for (String sysPkg : SYSTEM_PACKAGES) {
-            if (sysPkg.equals(packageName)) {
-                return true;
-            }
+            if (sysPkg.equals(packageName)) return true;
         }
-
-        // 检查是否是 com.android.* 开头的系统进程
         if (packageName.startsWith("com.android.") && !packageName.equals("com.android.chrome")) {
             return true;
         }
-
-        // 检查是否是系统UID (uid < 10000)
-        // 注意：这个检查需要在运行时进行，这里先返回false
-
         return false;
     }
 
     // ====================================================================
-    // 1. App层API - WifiManager / WifiInfo
+    // 1. WiFi API层
     // ====================================================================
-    private void hookAppLayer(ClassLoader cl) {
-        // getConnectionInfo → 返回伪造WifiInfo
+    private void hookWifiApi(ClassLoader cl) {
         hook("android.net.wifi.WifiManager", cl, "getConnectionInfo", p -> {
             WifiInfo fake = buildFakeWifiInfo();
-            if (fake != null) {
-                p.setResult(fake);
-            }
-            // 如果fake为null，保持原返回值，由各getter hook返回伪造值
+            if (fake != null) p.setResult(fake);
         });
-
-        // getBSSID
         hook("android.net.wifi.WifiInfo", cl, "getBSSID", p -> p.setResult(fakeBSSID));
-
-        // getSSID
         hook("android.net.wifi.WifiInfo", cl, "getSSID", p -> p.setResult("\"" + fakeSSID + "\""));
-
-        // getMacAddress
         hook("android.net.wifi.WifiInfo", cl, "getMacAddress", p -> p.setResult(fakeMAC));
-
-        // getNetworkId
         hook("android.net.wifi.WifiInfo", cl, "getNetworkId", p -> p.setResult(fakeNetworkId));
-
-        // getRssi
         hook("android.net.wifi.WifiInfo", cl, "getRssi", p -> p.setResult(fakeRSSI));
-
-        // getLinkSpeed
         hook("android.net.wifi.WifiInfo", cl, "getLinkSpeed", p -> p.setResult(fakeLinkSpeed));
-
-        // getFrequency
         hook("android.net.wifi.WifiInfo", cl, "getFrequency", p -> p.setResult(fakeFrequency));
-
-        // getIpAddress → 伪造IP
-        hook("android.net.wifi.WifiInfo", cl, "getIpAddress", p -> {
-            p.setResult(ipToInt(fakeIP));
-            writeLog("✓ WifiInfo.getIpAddress → " + fakeIP);
-        });
-
-        // getServerAddress
-        hook("android.net.wifi.WifiInfo", cl, "getServerAddress", p -> {
-            p.setResult(ipToInt(fakeGateway));
-            writeLog("✓ WifiInfo.getServerAddress → " + fakeGateway);
-        });
-
-        // isWifiEnabled
+        hook("android.net.wifi.WifiInfo", cl, "getIpAddress", p -> p.setResult(ipToInt(fakeIP)));
+        hook("android.net.wifi.WifiInfo", cl, "getServerAddress", p -> p.setResult(ipToInt(fakeGateway)));
         hook("android.net.wifi.WifiManager", cl, "isWifiEnabled", p -> p.setResult(true));
-
-        // getWifiState
         hook("android.net.wifi.WifiManager", cl, "getWifiState", p -> p.setResult(3));
     }
 
     // ====================================================================
-    // 2. Java层 - NetworkInterface
+    // 2. NetworkInterface层
     // ====================================================================
-    private void hookJavaLayer(ClassLoader cl) {
-        // getHardwareAddress → 伪造wlan0的MAC
+    private void hookNetworkInterface(ClassLoader cl) {
         try {
             findAndHookMethod(NetworkInterface.class, "getHardwareAddress", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     NetworkInterface ni = (NetworkInterface) param.thisObject;
-                    if ("wlan0".equals(ni.getName())) {
+                    String name = ni.getName();
+                    if (name != null && (name.equals("wlan0") || name.equals("eth0") || name.contains("wlan"))) {
                         param.setResult(parseMac(fakeMAC));
                     }
                 }
             });
-            writeLog("✓ NetworkInterface.getHardwareAddress");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInterface.getHardwareAddress: " + t.getMessage());
-        }
+        } catch (Throwable t) { writeLog("FAIL getHardwareAddress: " + t.getMessage()); }
 
-        // getByName("wlan0") → 确保返回wlan0
         try {
             findAndHookMethod(NetworkInterface.class, "getByName", String.class, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     String name = (String) param.args[0];
                     if (name != null && (name.equals("eth0") || name.contains("veth"))) {
-                        try {
-                            param.setResult(NetworkInterface.getByName("wlan0"));
-                        } catch (Exception e) {
-                            // 忽略
-                        }
+                        try { param.setResult(NetworkInterface.getByName("wlan0")); }
+                        catch (Exception e) { }
                     }
                 }
             });
-            writeLog("✓ NetworkInterface.getByName");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInterface.getByName: " + t.getMessage());
-        }
+        } catch (Throwable t) { writeLog("FAIL getByName: " + t.getMessage()); }
 
-        // getNetworkInterfaces → 确保wlan0在列表中
         try {
             findAndHookMethod(NetworkInterface.class, "getNetworkInterfaces", new XC_MethodHook() {
                 @Override
@@ -237,7 +194,6 @@ public class HookModule implements IXposedHookLoadPackage {
                     @SuppressWarnings("unchecked")
                     Enumeration<NetworkInterface> result = (Enumeration<NetworkInterface>) param.getResult();
                     if (result == null) return;
-
                     List<NetworkInterface> list = new ArrayList<>();
                     boolean hasWlan0 = false;
                     while (result.hasMoreElements()) {
@@ -245,25 +201,17 @@ public class HookModule implements IXposedHookLoadPackage {
                         if ("wlan0".equals(ni.getName())) hasWlan0 = true;
                         list.add(ni);
                     }
-
                     if (!hasWlan0) {
                         try {
                             NetworkInterface wlan0 = NetworkInterface.getByName("wlan0");
                             if (wlan0 != null) list.add(0, wlan0);
-                        } catch (Exception e) {
-                            // 忽略
-                        }
+                        } catch (Exception e) { }
                     }
-
                     param.setResult(java.util.Collections.enumeration(list));
                 }
             });
-            writeLog("✓ NetworkInterface.getNetworkInterfaces");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInterface.getNetworkInterfaces: " + t.getMessage());
-        }
+        } catch (Throwable t) { writeLog("FAIL getNetworkInterfaces: " + t.getMessage()); }
 
-        // getName / getDisplayName → eth0/veth → wlan0
         try {
             findAndHookMethod(NetworkInterface.class, "getName", new XC_MethodHook() {
                 @Override
@@ -274,10 +222,7 @@ public class HookModule implements IXposedHookLoadPackage {
                     }
                 }
             });
-            writeLog("✓ NetworkInterface.getName");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInterface.getName: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
         try {
             findAndHookMethod(NetworkInterface.class, "getDisplayName", new XC_MethodHook() {
@@ -289,39 +234,26 @@ public class HookModule implements IXposedHookLoadPackage {
                     }
                 }
             });
-            writeLog("✓ NetworkInterface.getDisplayName");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInterface.getDisplayName: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
-        // getInetAddresses → 伪造IP
         try {
             findAndHookMethod(NetworkInterface.class, "getInetAddresses", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     NetworkInterface ni = (NetworkInterface) param.thisObject;
                     String name = ni.getName();
-                    // 检查是否是WiFi相关接口
                     if (name != null && (name.equals("wlan0") || name.contains("wlan")
-                            || name.contains("wifi") || name.contains("eth"))) {
+                            || name.equals("eth0"))) {
                         try {
-                            InetAddress fakeAddr = InetAddress.getByName(fakeIP);
                             List<InetAddress> addrs = new ArrayList<>();
-                            addrs.add(fakeAddr);
+                            addrs.add(InetAddress.getByName(fakeIP));
                             param.setResult(java.util.Collections.enumeration(addrs));
-                            writeLog("✓ getInetAddresses hooked for " + name + " → " + fakeIP);
-                        } catch (Exception e) {
-                            // 忽略
-                        }
+                        } catch (Exception e) { }
                     }
                 }
             });
-            writeLog("✓ NetworkInterface.getInetAddresses");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInterface.getInetAddresses: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
-        // getInterfaceAddresses → 伪造IP (Android 23+) - 使用反射创建
         try {
             findAndHookMethod(NetworkInterface.class, "getInterfaceAddresses", new XC_MethodHook() {
                 @Override
@@ -329,574 +261,194 @@ public class HookModule implements IXposedHookLoadPackage {
                     NetworkInterface ni = (NetworkInterface) param.thisObject;
                     String name = ni.getName();
                     if (name != null && (name.equals("wlan0") || name.contains("wlan")
-                            || name.contains("wifi") || name.contains("eth"))) {
+                            || name.equals("eth0"))) {
                         try {
-                            // 使用反射创建InterfaceAddress
                             Class<?> ifAddrClass = Class.forName("java.net.InterfaceAddress");
-                            java.lang.reflect.Constructor<?> constructor = ifAddrClass.getDeclaredConstructor();
-                            constructor.setAccessible(true);
-                            Object fakeAddr = constructor.newInstance();
-
-                            // 设置address字段
+                            java.lang.reflect.Constructor<?> ctor = ifAddrClass.getDeclaredConstructor();
+                            ctor.setAccessible(true);
+                            Object fakeAddr = ctor.newInstance();
                             Field addrField = ifAddrClass.getDeclaredField("address");
                             addrField.setAccessible(true);
                             addrField.set(fakeAddr, InetAddress.getByName(fakeIP));
-
                             List<Object> addrs = new ArrayList<>();
                             addrs.add(fakeAddr);
                             param.setResult(addrs);
-                            writeLog("✓ getInterfaceAddresses hooked for " + name + " → " + fakeIP);
-                        } catch (Exception e) {
-                            writeLog("✗ getInterfaceAddresses hook failed: " + e.getMessage());
-                        }
+                        } catch (Exception e) { }
                     }
                 }
             });
-            writeLog("✓ NetworkInterface.getInterfaceAddresses");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInterface.getInterfaceAddresses: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
     }
 
     // ====================================================================
-    // 3. 系统属性 - SystemProperties / sysfs
-    // ====================================================================
-    private void hookSystemProperties(ClassLoader cl) {
-        // android.os.SystemProperties.get
-        try {
-            Class<?> spClass = Class.forName("android.os.SystemProperties");
-            for (Method m : spClass.getDeclaredMethods()) {
-                if ("get".equals(m.getName()) && m.getParameterCount() >= 1) {
-                    XposedBridge.hookMethod(m, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            String key = (String) param.args[0];
-                            if (key == null) return;
-
-                            if (key.equals("wifi.interface")) {
-                                param.setResult("wlan0");
-                            } else if (key.equals("wifi.direct.interface")) {
-                                param.setResult("p2p-dev-wlan0");
-                            } else if (key.equals("ro.hardware.wifi")) {
-                                param.setResult("wlan");
-                            }
-                        }
-                    });
-                }
-            }
-            writeLog("✓ SystemProperties.get (all overloads)");
-        } catch (Throwable t) {
-            writeLog("✗ SystemProperties.get: " + t.getMessage());
-        }
-
-        // Hook sysfs MAC文件的读取 - 多种方式拦截
-
-        // 1. FileInputStream(File) 构造函数
-        try {
-            findAndHookMethod(java.io.FileInputStream.class, "<init>", java.io.File.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    File file = (File) param.args[0];
-                    if (file != null) {
-                        String path = file.getAbsolutePath();
-                        if (path.matches(".*/sys/class/net/.*/address")) {
-                            try {
-                                File tmp = createFakeMacFile();
-                                param.args[0] = tmp;
-                                writeLog("✓ FileInputStream(File) redirected: " + path);
-                            } catch (Exception e) {
-                                writeLog("✗ FileInputStream(File) redirect failed: " + e.getMessage());
-                            }
-                        }
-                    }
-                }
-            });
-            writeLog("✓ FileInputStream.<init>(File)");
-        } catch (Throwable t) {
-            writeLog("✗ FileInputStream.<init>(File): " + t.getMessage());
-        }
-
-        // 2. FileInputStream(String) 构造函数 - 很多代码用字符串路径
-        try {
-            findAndHookMethod(java.io.FileInputStream.class, "<init>", String.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    String path = (String) param.args[0];
-                    if (path != null && path.matches(".*/sys/class/net/.*/address")) {
-                        try {
-                            File tmp = createFakeMacFile();
-                            // 替换为File构造函数
-                            param.args[0] = tmp.getAbsolutePath();
-                            writeLog("✓ FileInputStream(String) redirected: " + path);
-                        } catch (Exception e) {
-                            writeLog("✗ FileInputStream(String) redirect failed: " + e.getMessage());
-                        }
-                    }
-                }
-            });
-            writeLog("✓ FileInputStream.<init>(String)");
-        } catch (Throwable t) {
-            writeLog("✗ FileInputStream.<init>(String): " + t.getMessage());
-        }
-
-        // 3. FileReader(File) 构造函数
-        try {
-            findAndHookMethod(java.io.FileReader.class, "<init>", java.io.File.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    File file = (File) param.args[0];
-                    if (file != null) {
-                        String path = file.getAbsolutePath();
-                        if (path.matches(".*/sys/class/net/.*/address")) {
-                            try {
-                                File tmp = createFakeMacFile();
-                                param.args[0] = tmp;
-                                writeLog("✓ FileReader(File) redirected: " + path);
-                            } catch (Exception e) {
-                                writeLog("✗ FileReader(File) redirect failed: " + e.getMessage());
-                            }
-                        }
-                    }
-                }
-            });
-            writeLog("✓ FileReader.<init>(File)");
-        } catch (Throwable t) {
-            writeLog("✗ FileReader.<init>(File): " + t.getMessage());
-        }
-
-        // 4. FileReader(String) 构造函数
-        try {
-            findAndHookMethod(java.io.FileReader.class, "<init>", String.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    String path = (String) param.args[0];
-                    if (path != null && path.matches(".*/sys/class/net/.*/address")) {
-                        try {
-                            File tmp = createFakeMacFile();
-                            param.args[0] = tmp.getAbsolutePath();
-                            writeLog("✓ FileReader(String) redirected: " + path);
-                        } catch (Exception e) {
-                            writeLog("✗ FileReader(String) redirect failed: " + e.getMessage());
-                        }
-                    }
-                }
-            });
-            writeLog("✓ FileReader.<init>(String)");
-        } catch (Throwable t) {
-            writeLog("✗ FileReader.<init>(String): " + t.getMessage());
-        }
-
-        // 5. File.exists - 拦截sysfs文件存在性检查
-        try {
-            findAndHookMethod(java.io.File.class, "exists", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    File file = (File) param.thisObject;
-                    String path = file.getAbsolutePath();
-                    if (path.matches(".*/sys/class/net/.*/address")) {
-                        // 确保文件"存在"
-                        param.setResult(true);
-                    }
-                }
-            });
-            writeLog("✓ File.exists (sysfs)");
-        } catch (Throwable t) {
-            writeLog("✗ File.exists: " + t.getMessage());
-        }
-
-        // 6. File.length - 返回假MAC文件大小
-        try {
-            findAndHookMethod(java.io.File.class, "length", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    File file = (File) param.thisObject;
-                    String path = file.getAbsolutePath();
-                    if (path.matches(".*/sys/class/net/.*/address")) {
-                        // 返回假MAC的字节长度
-                        param.setResult((long)(fakeMAC.toLowerCase() + "\n").getBytes().length);
-                    }
-                }
-            });
-            writeLog("✓ File.length (sysfs)");
-        } catch (Throwable t) {
-            writeLog("✗ File.length: " + t.getMessage());
-        }
-
-        // 7. BufferedReader.readLine - 兜底方案
-        try {
-            findAndHookMethod(BufferedReader.class, "readLine", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    String original = (String) param.getResult();
-                    if (original == null) return;
-                    // 检查是否是MAC格式的行
-                    String trimmed = original.trim().toLowerCase();
-                    if (trimmed.matches("[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}")) {
-                        // 检查调用栈，判断是否来自读取sysfs的操作
-                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-                        for (StackTraceElement frame : stack) {
-                            String cls = frame.getClassName();
-                            String method = frame.getMethodName();
-                            // 检查是否来自网络相关类
-                            if (cls.contains("NetworkInterface") || cls.contains("LinuxNet")
-                                || cls.contains("WifiInfo") || cls.contains("LinkProperties")
-                                || cls.contains("InetAddress") || cls.contains("SocketImpl")
-                                || method.contains("getHardwareAddress") || method.contains("readMac")) {
-                                param.setResult(fakeMAC.toLowerCase());
-                                writeLog("✓ BufferedReader.readLine intercepted MAC: " + original + " → " + fakeMAC);
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-            writeLog("✓ BufferedReader.readLine (MAC interceptor)");
-        } catch (Throwable t) {
-            writeLog("✗ BufferedReader.readLine: " + t.getMessage());
-        }
-
-        // 8. Files.readAllBytes / Files.readAllLines (Java 7+ NIO)
-        try {
-            Class<?> filesClass = Class.forName("java.nio.file.Files");
-            // readAllBytes(Path)
-            findAndHookMethod(filesClass, "readAllBytes", java.nio.file.Path.class, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    java.nio.file.Path path = (java.nio.file.Path) param.args[0];
-                    if (path != null) {
-                        String pathStr = path.toString();
-                        if (pathStr.matches(".*/sys/class/net/.*/address")) {
-                            param.setResult((fakeMAC.toLowerCase() + "\n").getBytes());
-                            writeLog("✓ Files.readAllBytes intercepted: " + pathStr);
-                        }
-                    }
-                }
-            });
-            writeLog("✓ Files.readAllBytes (NIO)");
-        } catch (Throwable t) {
-            writeLog("✗ Files.readAllBytes: " + t.getMessage());
-        }
-
-        // 9. Files.readAllLines (Java 7+ NIO)
-        try {
-            Class<?> filesClass = Class.forName("java.nio.file.Files");
-            findAndHookMethod(filesClass, "readAllLines", java.nio.file.Path.class, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    java.nio.file.Path path = (java.nio.file.Path) param.args[0];
-                    if (path != null) {
-                        String pathStr = path.toString();
-                        if (pathStr.matches(".*/sys/class/net/.*/address")) {
-                            java.util.List<String> lines = new java.util.ArrayList<>();
-                            lines.add(fakeMAC.toLowerCase());
-                            param.setResult(lines);
-                            writeLog("✓ Files.readAllLines intercepted: " + pathStr);
-                        }
-                    }
-                }
-            });
-            writeLog("✓ Files.readAllLines (NIO)");
-        } catch (Throwable t) {
-            writeLog("✗ Files.readAllLines: " + t.getMessage());
-        }
-
-        // 10. Scanner - 有些代码用Scanner读取文件
-        try {
-            findAndHookMethod(java.util.Scanner.class, "<init>", java.io.InputStream.class, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    // Scanner初始化后，检查是否有sysfs MAC在缓冲区
-                    // 这个比较难hook，先跳过
-                }
-            });
-            writeLog("✓ Scanner.<init> (placeholder)");
-        } catch (Throwable t) {
-            writeLog("✗ Scanner.<init>: " + t.getMessage());
-        }
-    }
-
-    // ====================================================================
-    // 4. 底层网络 - DhcpInfo / NetworkCapabilities
+    // 3. 网络层 - DhcpInfo / NetworkCapabilities / LinkProperties
     // ====================================================================
     private void hookNetworkLayer(ClassLoader cl) {
-        // getDhcpInfo → 返回伪造DhcpInfo
         hook("android.net.wifi.WifiManager", cl, "getDhcpInfo", p -> {
             try {
-                android.net.DhcpInfo fakeDhcp = new android.net.DhcpInfo();
-                fakeDhcp.ipAddress = ipToInt(fakeIP);
-                fakeDhcp.gateway = ipToInt(fakeGateway);
-                fakeDhcp.netmask = ipToInt(fakeNetmask);
-                fakeDhcp.dns1 = ipToInt(fakeDNS1);
-                fakeDhcp.dns2 = ipToInt(fakeDNS2);
-                fakeDhcp.serverAddress = ipToInt(fakeGateway);
-                fakeDhcp.leaseDuration = 86400;
-                p.setResult(fakeDhcp);
-                writeLog("✓ getDhcpInfo → IP=" + fakeIP + " gw=" + fakeGateway + " mask=" + fakeNetmask);
-            } catch (Throwable e) {
-                writeLog("✗ getDhcpInfo hook failed: " + e.getMessage());
-                XposedBridge.log(TAG + ": build fake DhcpInfo failed: " + e.getMessage());
-            }
+                android.net.DhcpInfo d = new android.net.DhcpInfo();
+                d.ipAddress = ipToInt(fakeIP);
+                d.gateway = ipToInt(fakeGateway);
+                d.netmask = ipToInt(fakeNetmask);
+                d.dns1 = ipToInt(fakeDNS1);
+                d.dns2 = ipToInt(fakeDNS2);
+                d.serverAddress = ipToInt(fakeGateway);
+                d.leaseDuration = 86400;
+                p.setResult(d);
+            } catch (Throwable e) { }
         });
 
-        // NetworkCapabilities.getTransportInfo → 返回伪造WifiInfo (Android 12+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             hook("android.net.NetworkCapabilities", cl, "getTransportInfo", p -> {
-                Object result = p.getResult();
-                if (result instanceof WifiInfo) {
+                if (p.getResult() instanceof WifiInfo) {
                     WifiInfo fake = buildFakeWifiInfo();
-                    if (fake != null) {
-                        p.setResult(fake);
-                    }
+                    if (fake != null) p.setResult(fake);
                 }
             });
         }
 
-        // hasTransport → WiFi=true (Android 6+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             hook("android.net.NetworkCapabilities", cl, "hasTransport", p -> {
                 int type = (int) p.args[0];
-                if (type == 0) p.setResult(true);  // TRANSPORT_WIFI
-                if (type == 1) p.setResult(false); // TRANSPORT_CELLULAR
-                if (type == 3) p.setResult(false); // TRANSPORT_ETHERNET
+                if (type == 0) p.setResult(true);
+                if (type == 1) p.setResult(false);
+                if (type == 3) p.setResult(false);
             });
-            writeLog("✓ NetworkCapabilities.hasTransport");
         }
 
-        // Android 9 适配: hook ActiveNetwork获取方式
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            hook("android.net.ConnectivityManager", cl, "getActiveNetwork", p -> {
-                // 保持原返回值，但后续会通过其他hook伪造信息
-            });
-            writeLog("✓ ConnectivityManager.getActiveNetwork (Android 6+)");
-        }
+        try { hook("android.net.NetworkInfo", cl, "getExtraInfo", p -> p.setResult("\"" + fakeSSID + "\"")); }
+        catch (Throwable t) { }
 
-        // Android 9 适配: hook getNetworkCapabilities
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            hook("android.net.ConnectivityManager", cl, "getNetworkCapabilities", p -> {
-                // 保持原返回值，NetworkCapabilities的其他方法会被hook
-            });
-            writeLog("✓ ConnectivityManager.getNetworkCapabilities (Android 6+)");
-        }
-
-        // ConnectivityManager.getActiveNetworkInfo → 返回伪造NetworkInfo
-        try {
-            hook("android.net.ConnectivityManager", cl, "getActiveNetworkInfo", p -> {
-                // 让原始方法执行，后续会通过其他hook伪造信息
-                writeLog("✓ ConnectivityManager.getActiveNetworkInfo called");
-            });
-            writeLog("✓ ConnectivityManager.getActiveNetworkInfo");
-        } catch (Throwable t) {
-            writeLog("✗ ConnectivityManager.getActiveNetworkInfo: " + t.getMessage());
-        }
-
-        // NetworkInfo.getExtraInfo → 返回伪造SSID
-        try {
-            hook("android.net.NetworkInfo", cl, "getExtraInfo", p -> {
-                p.setResult("\"" + fakeSSID + "\"");
-                writeLog("✓ NetworkInfo.getExtraInfo → " + fakeSSID);
-            });
-            writeLog("✓ NetworkInfo.getExtraInfo");
-        } catch (Throwable t) {
-            writeLog("✗ NetworkInfo.getExtraInfo: " + t.getMessage());
-        }
-
-        // LinkAddress.getAddress → 伪造IP (Android 7+)
         try {
             findAndHookMethod("android.net.LinkAddress", cl, "getAddress", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        InetAddress fakeAddr = InetAddress.getByName(fakeIP);
-                        param.setResult(fakeAddr);
-                        writeLog("✓ LinkAddress.getAddress → " + fakeIP);
-                    } catch (Exception e) {
-                        writeLog("✗ LinkAddress.getAddress hook failed: " + e.getMessage());
-                    }
+                    try { param.setResult(InetAddress.getByName(fakeIP)); } catch (Exception e) { }
                 }
             });
-            writeLog("✓ LinkAddress.getAddress");
-        } catch (Throwable t) {
-            writeLog("✗ LinkAddress.getAddress: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
-        // LinkAddress.toString → 返回伪造IP (Android 7+)
         try {
             findAndHookMethod("android.net.LinkAddress", cl, "toString", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     param.setResult(fakeIP + "/24");
-                    writeLog("✓ LinkAddress.toString → " + fakeIP + "/24");
                 }
             });
-            writeLog("✓ LinkAddress.toString");
-        } catch (Throwable t) {
-            writeLog("✗ LinkAddress.toString: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
-        // InetAddress.getHostAddress → 伪造IP (拦截所有InetAddress)
         try {
             findAndHookMethod(InetAddress.class, "getHostAddress", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    InetAddress addr = (InetAddress) param.thisObject;
-                    String hostAddr = addr.getHostAddress();
-                    // 检查是否是本地WiFi IP
-                    if (hostAddr != null && hostAddr.startsWith("192.168.") ||
-                        hostAddr.startsWith("10.") || hostAddr.startsWith("172.")) {
-                        // 可能是WiFi IP，替换为伪造值
-                        if (!hostAddr.equals(fakeIP)) {
-                            param.setResult(fakeIP);
-                            writeLog("✓ InetAddress.getHostAddress → " + fakeIP + " (was " + hostAddr + ")");
-                        }
+                    String addr = (String) param.getResult();
+                    if (addr != null && (addr.startsWith("192.168.") || addr.startsWith("10.") || addr.startsWith("172."))) {
+                        if (!addr.equals(fakeIP)) param.setResult(fakeIP);
                     }
                 }
             });
-            writeLog("✓ InetAddress.getHostAddress");
-        } catch (Throwable t) {
-            writeLog("✗ InetAddress.getHostAddress: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
-        // Inet4Address.getHostAddress → 伪造IPv4
         try {
             findAndHookMethod(java.net.Inet4Address.class, "getHostAddress", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    param.setResult(fakeIP);
-                    writeLog("✓ Inet4Address.getHostAddress → " + fakeIP);
+                    String addr = (String) param.getResult();
+                    if (addr != null && (addr.startsWith("192.168.") || addr.startsWith("10.") || addr.startsWith("172."))) {
+                        param.setResult(fakeIP);
+                    }
                 }
             });
-            writeLog("✓ Inet4Address.getHostAddress");
-        } catch (Throwable t) {
-            writeLog("✗ Inet4Address.getHostAddress: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
-        // ========== LinkProperties IP Hooks (所有Android版本) ==========
-        // getInterfaceName → wlan0
+        // IPv6 EUI-64 过滤
         try {
-            findAndHookMethod("android.net.LinkProperties", cl, "getInterfaceName",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        String result = (String) param.getResult();
-                        if (result != null && (result.contains("wlan") || result.contains("eth"))) {
-                            param.setResult("wlan0");
-                        }
+            findAndHookMethod(java.net.Inet6Address.class, "getHostAddress", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    String addr = (String) param.getResult();
+                    if (addr != null && (addr.startsWith("fe80:") || addr.startsWith("FE80:"))) {
+                        param.setResult(generateFakeIPv6LinkLocal());
                     }
-                });
-            writeLog("✓ LinkProperties.getInterfaceName");
-        } catch (Throwable t) {
-            writeLog("✗ LinkProperties.getInterfaceName: " + t.getMessage());
-        }
+                }
+            });
+        } catch (Throwable t) { }
 
-        // getLinkAddresses → 伪造IP
+        // LinkProperties
         try {
-            findAndHookMethod("android.net.LinkProperties", cl, "getLinkAddresses",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        try {
-                            Class<?> linkAddrClass = Class.forName("android.net.LinkAddress");
-                            java.lang.reflect.Constructor<?> constructor = linkAddrClass.getConstructor(
-                                InetAddress.class, int.class);
-                            InetAddress fakeAddr = InetAddress.getByName(fakeIP);
-                            Object fakeLinkAddr = constructor.newInstance(fakeAddr, 24);
+            findAndHookMethod("android.net.LinkProperties", cl, "getInterfaceName", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    param.setResult("wlan0");
+                }
+            });
+        } catch (Throwable t) { }
 
-                            List<Object> newList = new ArrayList<>();
-                            newList.add(fakeLinkAddr);
-                            param.setResult(newList);
-                            writeLog("✓ LinkProperties.getLinkAddresses → " + fakeIP);
-                        } catch (Throwable e) {
-                            writeLog("✗ LinkProperties.getLinkAddresses hook failed: " + e.getMessage());
-                        }
-                    }
-                });
-            writeLog("✓ LinkProperties.getLinkAddresses");
-        } catch (Throwable t) {
-            writeLog("✗ LinkProperties.getLinkAddresses: " + t.getMessage());
-        }
-
-        // getDhcpServerAddress → 伪造DHCP服务器
         try {
-            findAndHookMethod("android.net.LinkProperties", cl, "getDhcpServerAddress",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        try {
-                            InetAddress fakeServer = InetAddress.getByName(fakeGateway);
-                            param.setResult(fakeServer);
-                            writeLog("✓ LinkProperties.getDhcpServerAddress → " + fakeGateway);
-                        } catch (Throwable e) {
-                            writeLog("✗ hook failed: " + e.getMessage());
-                        }
-                    }
-                });
-            writeLog("✓ LinkProperties.getDhcpServerAddress");
-        } catch (Throwable t) {
-            writeLog("✗ LinkProperties.getDhcpServerAddress: " + t.getMessage());
-        }
+            findAndHookMethod("android.net.LinkProperties", cl, "getLinkAddresses", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Class<?> laClass = Class.forName("android.net.LinkAddress");
+                        java.lang.reflect.Constructor<?> ctor = laClass.getConstructor(InetAddress.class, int.class);
+                        Object la = ctor.newInstance(InetAddress.getByName(fakeIP), 24);
+                        List<Object> list = new ArrayList<>();
+                        list.add(la);
+                        param.setResult(list);
+                    } catch (Throwable e) { }
+                }
+            });
+        } catch (Throwable t) { }
 
-        // getDnsServers → 伪造DNS
         try {
-            findAndHookMethod("android.net.LinkProperties", cl, "getDnsServers",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        try {
-                            List<InetAddress> fakeDns = new ArrayList<>();
-                            fakeDns.add(InetAddress.getByName(fakeDNS1));
-                            fakeDns.add(InetAddress.getByName(fakeDNS2));
-                            param.setResult(fakeDns);
-                            writeLog("✓ LinkProperties.getDnsServers → " + fakeDNS1 + "," + fakeDNS2);
-                        } catch (Throwable e) {
-                            writeLog("✗ hook failed: " + e.getMessage());
-                        }
-                    }
-                });
-            writeLog("✓ LinkProperties.getDnsServers");
-        } catch (Throwable t) {
-            writeLog("✗ LinkProperties.getDnsServers: " + t.getMessage());
-        }
+            findAndHookMethod("android.net.LinkProperties", cl, "getDhcpServerAddress", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try { param.setResult(InetAddress.getByName(fakeGateway)); } catch (Exception e) { }
+                }
+            });
+        } catch (Throwable t) { }
 
-        // getRoutes → 伪造路由网关
         try {
-            findAndHookMethod("android.net.LinkProperties", cl, "getRoutes",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        try {
-                            Class<?> routeInfoClass = Class.forName("android.net.RouteInfo");
-                            java.lang.reflect.Constructor<?> constructor = routeInfoClass.getConstructor(
-                                java.net.InetAddress.class, java.net.InetAddress.class, String.class);
-                            InetAddress fakeDest = InetAddress.getByName("0.0.0.0");
-                            InetAddress fakeGatewayAddr = InetAddress.getByName(fakeGateway);
-                            Object fakeRoute = constructor.newInstance(fakeDest, fakeGatewayAddr, "wlan0");
+            findAndHookMethod("android.net.LinkProperties", cl, "getDnsServers", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        List<InetAddress> dns = new ArrayList<>();
+                        dns.add(InetAddress.getByName(fakeDNS1));
+                        dns.add(InetAddress.getByName(fakeDNS2));
+                        param.setResult(dns);
+                    } catch (Exception e) { }
+                }
+            });
+        } catch (Throwable t) { }
 
-                            List<Object> newList = new ArrayList<>();
-                            newList.add(fakeRoute);
-                            param.setResult(newList);
-                            writeLog("✓ LinkProperties.getRoutes → gateway=" + fakeGateway);
-                        } catch (Throwable e) {
-                            writeLog("✗ hook failed: " + e.getMessage());
-                        }
-                    }
-                });
-            writeLog("✓ LinkProperties.getRoutes");
-        } catch (Throwable t) {
-            writeLog("✗ LinkProperties.getRoutes: " + t.getMessage());
-        }
+        try {
+            findAndHookMethod("android.net.LinkProperties", cl, "getRoutes", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Class<?> riClass = Class.forName("android.net.RouteInfo");
+                        java.lang.reflect.Constructor<?> ctor = riClass.getConstructor(InetAddress.class, InetAddress.class, String.class);
+                        Object route = ctor.newInstance(InetAddress.getByName("0.0.0.0"), InetAddress.getByName(fakeGateway), "wlan0");
+                        List<Object> list = new ArrayList<>();
+                        list.add(route);
+                        param.setResult(list);
+                    } catch (Throwable e) { }
+                }
+            });
+        } catch (Throwable t) { }
     }
 
     // ====================================================================
-    // 5. WiFi扫描 - getScanResults / ScanResult
+    // 4. WiFi扫描
     // ====================================================================
     private void hookScanResults(ClassLoader cl) {
-        // getScanResults → 注入伪造AP + 伪造所有结果频率
         hook("android.net.wifi.WifiManager", cl, "getScanResults", p -> {
             @SuppressWarnings("unchecked")
             List<ScanResult> original = (List<ScanResult>) p.getResult();
             if (original == null) original = new ArrayList<>();
 
-            // 检查是否已有匹配的BSSID
             boolean found = false;
             for (ScanResult sr : original) {
                 if (fakeBSSID.equalsIgnoreCase(sr.BSSID)) {
@@ -906,57 +458,577 @@ public class HookModule implements IXposedHookLoadPackage {
                     sr.capabilities = "[WPA2-PSK-CCMP][ESS]";
                     found = true;
                 }
-                // 伪造所有结果的频率，防止通过其他AP获取真实频率
-                if (sr.frequency <= 0 || sr.frequency > 6000) {
-                    sr.frequency = fakeFrequency;
-                }
             }
-
-            // 没有就插入伪造AP
             if (!found) {
                 ScanResult fakeAP = createFakeScanResult();
                 original.add(0, fakeAP);
             }
-
             p.setResult(original);
         });
 
-        // ScanResult.frequency字段 - 通过getter hook
+        hook("android.net.wifi.WifiManager", cl, "startScan", p -> p.setResult(true));
+    }
+
+    // ====================================================================
+    // 5. SystemProperties (统一)
+    // ====================================================================
+    private void hookSystemProperties(ClassLoader cl) {
         try {
-            findAndHookMethod(ScanResult.class, "getFrequency", new XC_MethodHook() {
+            Class<?> spClass = Class.forName("android.os.SystemProperties");
+            for (Method m : spClass.getDeclaredMethods()) {
+                if ("get".equals(m.getName()) && m.getParameterCount() >= 1) {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            String key = (String) param.args[0];
+                            if (key == null) return;
+                            switch (key) {
+                                case "wifi.interface": param.setResult("wlan0"); break;
+                                case "wifi.direct.interface": param.setResult("p2p-dev-wlan0"); break;
+                                case "ro.hardware.wifi": param.setResult("wlan"); break;
+                                case "ro.build.tags": param.setResult("release-keys"); break;
+                                case "ro.debuggable": param.setResult("0"); break;
+                                case "ro.secure": param.setResult("1"); break;
+                                case "ro.build.selinux": param.setResult("1"); break;
+                                case "ro.build.type": param.setResult("user"); break;
+                                case "init.svc.adbd": param.setResult("stopped"); break;
+                                default:
+                                    if (key.contains("magisk") || key.contains("supersu")) {
+                                        param.setResult("");
+                                    }
+                                    break;
+                            }
+                        }
+                    });
+                }
+            }
+            writeLog("OK SystemProperties.get");
+        } catch (Throwable t) { writeLog("FAIL SystemProperties: " + t.getMessage()); }
+    }
+
+    // ====================================================================
+    // 6. 文件系统 (统一) - sysfs/proc/root路径全部在这里处理
+    // ====================================================================
+    private void hookFileSystem(ClassLoader cl) {
+        // File.exists - 统一处理sysfs + root隐藏
+        try {
+            findAndHookMethod(java.io.File.class, "exists", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    ScanResult sr = (ScanResult) param.thisObject;
-                    if (fakeBSSID.equalsIgnoreCase(sr.BSSID)) {
-                        param.setResult(fakeFrequency);
+                    File file = (File) param.thisObject;
+                    String path = file.getAbsolutePath();
+
+                    if (path.matches(".*/sys/class/net/.*/address")) {
+                        param.setResult(true);
+                        return;
+                    }
+                    if (isRootPath(path)) {
+                        param.setResult(false);
                     }
                 }
             });
-            writeLog("✓ ScanResult.getFrequency");
-        } catch (Throwable t) {
-            writeLog("✗ ScanResult.getFrequency: " + t.getMessage());
+        } catch (Throwable t) { writeLog("FAIL File.exists: " + t.getMessage()); }
+
+        // File.canRead/canWrite/canExecute
+        String[] accessMethods = {"canRead", "canWrite", "canExecute", "isFile", "isDirectory"};
+        for (String methodName : accessMethods) {
+            try {
+                findAndHookMethod(java.io.File.class, methodName, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        File file = (File) param.thisObject;
+                        if (isRootPath(file.getAbsolutePath())) {
+                            param.setResult(false);
+                        }
+                    }
+                });
+            } catch (Throwable t) { }
         }
 
-        // startScan → 返回true
-        hook("android.net.wifi.WifiManager", cl, "startScan", p -> p.setResult(true));
+        // File.length - sysfs MAC
+        try {
+            findAndHookMethod(java.io.File.class, "length", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    File file = (File) param.thisObject;
+                    if (file.getAbsolutePath().matches(".*/sys/class/net/.*/address")) {
+                        param.setResult((long)(fakeMAC.toLowerCase() + "\n").getBytes().length);
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // File.listFiles - 过滤root相关文件
+        try {
+            findAndHookMethod(java.io.File.class, "listFiles", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    File[] files = (File[]) param.getResult();
+                    if (files == null) return;
+                    File dir = (File) param.thisObject;
+                    String dirPath = dir.getAbsolutePath();
+                    if (dirPath.startsWith("/system") || dirPath.startsWith("/sbin")
+                        || dirPath.startsWith("/data/adb") || dirPath.startsWith("/su")) {
+                        List<File> filtered = new ArrayList<>();
+                        for (File f : files) {
+                            if (!isRootPath(f.getAbsolutePath())) {
+                                filtered.add(f);
+                            }
+                        }
+                        param.setResult(filtered.toArray(new File[0]));
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // FileInputStream(String) - 统一重定向
+        try {
+            findAndHookMethod(java.io.FileInputStream.class, "<init>", String.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String path = (String) param.args[0];
+                    if (path == null) return;
+
+                    if (path.matches(".*/sys/class/net/.*/address")) {
+                        try { param.args[0] = createFakeMacFile().getAbsolutePath(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/arp")) {
+                        try { param.args[0] = createFakeArpFile().getAbsolutePath(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/if_inet6")) {
+                        try { param.args[0] = createFakeInet6File().getAbsolutePath(); }
+                        catch (Exception e) { }
+                    }
+                }
+            });
+        } catch (Throwable t) { writeLog("FAIL FileInputStream(String): " + t.getMessage()); }
+
+        // FileInputStream(File) - 统一重定向
+        try {
+            findAndHookMethod(java.io.FileInputStream.class, "<init>", java.io.File.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    File file = (File) param.args[0];
+                    if (file == null) return;
+                    String path = file.getAbsolutePath();
+
+                    if (path.matches(".*/sys/class/net/.*/address")) {
+                        try { param.args[0] = createFakeMacFile(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/arp")) {
+                        try { param.args[0] = createFakeArpFile(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/if_inet6")) {
+                        try { param.args[0] = createFakeInet6File(); }
+                        catch (Exception e) { }
+                    }
+                }
+            });
+        } catch (Throwable t) { writeLog("FAIL FileInputStream(File): " + t.getMessage()); }
+
+        // FileReader(String)
+        try {
+            findAndHookMethod(java.io.FileReader.class, "<init>", String.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String path = (String) param.args[0];
+                    if (path == null) return;
+
+                    if (path.matches(".*/sys/class/net/.*/address")) {
+                        try { param.args[0] = createFakeMacFile().getAbsolutePath(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/arp")) {
+                        try { param.args[0] = createFakeArpFile().getAbsolutePath(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/if_inet6")) {
+                        try { param.args[0] = createFakeInet6File().getAbsolutePath(); }
+                        catch (Exception e) { }
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // FileReader(File)
+        try {
+            findAndHookMethod(java.io.FileReader.class, "<init>", java.io.File.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    File file = (File) param.args[0];
+                    if (file == null) return;
+                    String path = file.getAbsolutePath();
+
+                    if (path.matches(".*/sys/class/net/.*/address")) {
+                        try { param.args[0] = createFakeMacFile(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/arp")) {
+                        try { param.args[0] = createFakeArpFile(); }
+                        catch (Exception e) { }
+                    } else if (path.equals("/proc/net/if_inet6")) {
+                        try { param.args[0] = createFakeInet6File(); }
+                        catch (Exception e) { }
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // BufferedReader.readLine - 统一处理MAC拦截 + proc过滤
+        try {
+            findAndHookMethod(BufferedReader.class, "readLine", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    String line = (String) param.getResult();
+                    if (line == null) return;
+
+                    // MAC格式拦截
+                    String trimmed = line.trim().toLowerCase();
+                    if (trimmed.matches("[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}")) {
+                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+                        for (StackTraceElement frame : stack) {
+                            String cls = frame.getClassName();
+                            if (cls.contains("NetworkInterface") || cls.contains("WifiInfo")
+                                || cls.contains("LinkProperties") || cls.contains("InetAddress")) {
+                                param.setResult(fakeMAC.toLowerCase());
+                                return;
+                            }
+                        }
+                    }
+
+                    // /proc/self/maps 过滤Xposed/Magisk特征
+                    if (containsRootSignature(line)) {
+                        param.setResult(null);
+                    }
+                }
+            });
+        } catch (Throwable t) { writeLog("FAIL BufferedReader: " + t.getMessage()); }
+
+        // NIO Files.readAllBytes
+        try {
+            Class<?> filesClass = Class.forName("java.nio.file.Files");
+            findAndHookMethod(filesClass, "readAllBytes", java.nio.file.Path.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    java.nio.file.Path path = (java.nio.file.Path) param.args[0];
+                    if (path != null && path.toString().matches(".*/sys/class/net/.*/address")) {
+                        param.setResult((fakeMAC.toLowerCase() + "\n").getBytes());
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // NIO Files.readAllLines
+        try {
+            Class<?> filesClass = Class.forName("java.nio.file.Files");
+            findAndHookMethod(filesClass, "readAllLines", java.nio.file.Path.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    java.nio.file.Path path = (java.nio.file.Path) param.args[0];
+                    if (path != null && path.toString().matches(".*/sys/class/net/.*/address")) {
+                        List<String> lines = new ArrayList<>();
+                        lines.add(fakeMAC.toLowerCase());
+                        param.setResult(lines);
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        writeLog("OK FileSystem hooks (unified)");
+    }
+
+    // ====================================================================
+    // 7. 命令执行 (统一) - Runtime.exec + ProcessBuilder
+    // ====================================================================
+    private void hookCommandExecution(ClassLoader cl) {
+        // Runtime.exec(String)
+        try {
+            findAndHookMethod(Runtime.class, "exec", String.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String cmd = (String) param.args[0];
+                    if (shouldBlockCommand(cmd)) {
+                        param.setThrowable(new java.io.IOException("Permission denied"));
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // Runtime.exec(String[])
+        try {
+            findAndHookMethod(Runtime.class, "exec", String[].class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String[] cmds = (String[]) param.args[0];
+                    if (cmds != null && cmds.length > 0 && shouldBlockCommand(joinArray(cmds))) {
+                        param.setThrowable(new java.io.IOException("Permission denied"));
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // Runtime.exec(String, String[], File)
+        try {
+            findAndHookMethod(Runtime.class, "exec", String.class, String[].class, java.io.File.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String cmd = (String) param.args[0];
+                    if (shouldBlockCommand(cmd)) {
+                        param.setThrowable(new java.io.IOException("Permission denied"));
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // Runtime.exec(String[], String[], File)
+        try {
+            findAndHookMethod(Runtime.class, "exec", String[].class, String[].class, java.io.File.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String[] cmds = (String[]) param.args[0];
+                    if (cmds != null && cmds.length > 0 && shouldBlockCommand(joinArray(cmds))) {
+                        param.setThrowable(new java.io.IOException("Permission denied"));
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        // ProcessBuilder.start
+        try {
+            findAndHookMethod(ProcessBuilder.class, "start", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    ProcessBuilder pb = (ProcessBuilder) param.thisObject;
+                    List<String> cmds = pb.command();
+                    if (cmds != null && !cmds.isEmpty() && shouldBlockCommand(joinList(cmds))) {
+                        param.setThrowable(new java.io.IOException("Permission denied"));
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+
+        writeLog("OK Command execution hooks");
+    }
+
+    // ====================================================================
+    // 8. Root隐藏 (PackageManager + Build字段)
+    // ====================================================================
+    private void hookRootHiding(ClassLoader cl) {
+        // PackageManager.getPackageInfo
+        try {
+            findAndHookMethod("android.app.ApplicationPackageManager", cl, "getPackageInfo",
+                String.class, int.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        String pkg = (String) param.args[0];
+                        if (pkg != null && ROOT_PACKAGES.contains(pkg)) {
+                            param.setThrowable(new android.content.pm.PackageManager.NameNotFoundException(pkg));
+                        }
+                    }
+                });
+        } catch (Throwable t) { writeLog("FAIL getPackageInfo: " + t.getMessage()); }
+
+        // PackageManager.getInstalledPackages
+        try {
+            findAndHookMethod("android.app.ApplicationPackageManager", cl, "getInstalledPackages",
+                int.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        @SuppressWarnings("unchecked")
+                        List<Object> packages = (List<Object>) param.getResult();
+                        if (packages == null) return;
+                        List<Object> filtered = new ArrayList<>();
+                        for (Object pkg : packages) {
+                            try {
+                                String name = (String) XposedHelpers.getObjectField(pkg, "packageName");
+                                if (!ROOT_PACKAGES.contains(name)) filtered.add(pkg);
+                            } catch (Throwable t2) { filtered.add(pkg); }
+                        }
+                        param.setResult(filtered);
+                    }
+                });
+        } catch (Throwable t) { writeLog("FAIL getInstalledPackages: " + t.getMessage()); }
+
+        // PackageManager.getInstalledApplications
+        try {
+            findAndHookMethod("android.app.ApplicationPackageManager", cl, "getInstalledApplications",
+                int.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        @SuppressWarnings("unchecked")
+                        List<Object> apps = (List<Object>) param.getResult();
+                        if (apps == null) return;
+                        List<Object> filtered = new ArrayList<>();
+                        for (Object app : apps) {
+                            try {
+                                String name = (String) XposedHelpers.getObjectField(app, "packageName");
+                                if (!ROOT_PACKAGES.contains(name)) filtered.add(app);
+                            } catch (Throwable t2) { filtered.add(app); }
+                        }
+                        param.setResult(filtered);
+                    }
+                });
+        } catch (Throwable t) { writeLog("FAIL getInstalledApplications: " + t.getMessage()); }
+
+        // Build.TAGS 字段修改
+        try {
+            XposedHelpers.setStaticObjectField(Build.class, "TAGS", "release-keys");
+            writeLog("OK Build.TAGS = release-keys");
+        } catch (Throwable t) {
+            try {
+                Field tagsField = Build.class.getDeclaredField("TAGS");
+                tagsField.setAccessible(true);
+                tagsField.set(null, "release-keys");
+            } catch (Throwable t2) { writeLog("FAIL Build.TAGS: " + t2.getMessage()); }
+        }
+
+        // Build.TYPE (有些检测器检查这个)
+        try {
+            XposedHelpers.setStaticObjectField(Build.class, "TYPE", "user");
+        } catch (Throwable t) { }
+
+        // Settings.Secure & Settings.Global
+        try {
+            findAndHookMethod("android.provider.Settings$Secure", cl, "getString",
+                android.content.ContentResolver.class, String.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        String key = (String) param.args[1];
+                        if (key == null) return;
+                        switch (key) {
+                            case "adb_enabled": param.setResult("0"); break;
+                            case "development_settings_enabled": param.setResult("0"); break;
+                            case "wifi_mac_address":
+                            case "wifi_mac":
+                                param.setResult(fakeMAC); break;
+                            case "bluetooth_address":
+                                param.setResult(generateFakeBluetoothMac()); break;
+                        }
+                    }
+                });
+        } catch (Throwable t) { writeLog("FAIL Settings.Secure: " + t.getMessage()); }
+
+        try {
+            findAndHookMethod("android.provider.Settings$Global", cl, "getString",
+                android.content.ContentResolver.class, String.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        String key = (String) param.args[1];
+                        if (key == null) return;
+                        switch (key) {
+                            case "adb_enabled": param.setResult("0"); break;
+                            case "development_settings_enabled": param.setResult("0"); break;
+                        }
+                    }
+                });
+        } catch (Throwable t) { }
+
+        writeLog("OK Root hiding hooks");
+    }
+
+    // ====================================================================
+    // 9. MAC泄漏补全
+    // ====================================================================
+    private void hookMacLeaks(ClassLoader cl) {
+        // WifiManager.getConfiguredNetworks
+        try {
+            hook("android.net.wifi.WifiManager", cl, "getConfiguredNetworks", p -> {
+                try {
+                    Class<?> wifiConfigClass = Class.forName("android.net.wifi.WifiConfiguration");
+                    Object fakeConfig = wifiConfigClass.newInstance();
+                    XposedHelpers.setObjectField(fakeConfig, "SSID", "\"" + fakeSSID + "\"");
+                    XposedHelpers.setObjectField(fakeConfig, "BSSID", fakeBSSID);
+                    XposedHelpers.setIntField(fakeConfig, "networkId", fakeNetworkId);
+                    List<Object> list = new ArrayList<>();
+                    list.add(fakeConfig);
+                    p.setResult(list);
+                } catch (Throwable t2) { }
+            });
+        } catch (Throwable t) { }
+
+        // WifiInfo.getInformationElements (Android 12+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                hook("android.net.wifi.WifiInfo", cl, "getInformationElements", p -> p.setResult(null));
+            } catch (Throwable t) { }
+        }
+
+        // WifiInfo的其他可能泄漏方法
+        try { hook("android.net.wifi.WifiInfo", cl, "getPasspointFqdn", p -> p.setResult(null)); }
+        catch (Throwable t) { }
+        try { hook("android.net.wifi.WifiInfo", cl, "getPasspointProviderFriendlyName", p -> p.setResult(null)); }
+        catch (Throwable t) { }
+
+        writeLog("OK MAC leak patches");
+    }
+
+    // ====================================================================
+    // 判断方法
+    // ====================================================================
+    private boolean shouldBlockCommand(String cmd) {
+        if (cmd == null) return false;
+        String lower = cmd.toLowerCase().trim();
+
+        // Root检测命令
+        if (lower.equals("su") || lower.startsWith("su ") || lower.endsWith("/su")) return true;
+        if (lower.contains("which su") || lower.contains("type su")) return true;
+        if (lower.equals("id") || lower.equals("whoami")) return true;
+        if (lower.contains("magisk") || lower.contains("busybox")) return true;
+        if (lower.contains("getprop") && (lower.contains("ro.build.tags")
+            || lower.contains("ro.debuggable") || lower.contains("ro.secure"))) return true;
+
+        // MAC泄漏命令
+        if (lower.startsWith("ip link") || lower.startsWith("ip addr")
+            || lower.startsWith("ip -d link") || lower.startsWith("ip a")) return true;
+        if (lower.startsWith("ifconfig") || lower.contains("/ifconfig")) return true;
+        if (lower.contains("cat") && lower.contains("/sys/class/net") && lower.contains("address")) return true;
+        if (lower.contains("cat") && (lower.contains("/proc/net/arp") || lower.contains("/proc/net/if_inet6"))) return true;
+        if (lower.startsWith("netcfg") || lower.contains("/netcfg")) return true;
+        if (lower.contains("getprop") && lower.contains("wifi")) return true;
+
+        // 路径检测
+        for (String path : ROOT_PATHS) {
+            if (lower.contains(path)) return true;
+        }
+
+        return false;
+    }
+
+    private boolean isRootPath(String path) {
+        if (path == null) return false;
+        if (ROOT_PATHS.contains(path)) return true;
+        String lower = path.toLowerCase();
+        if ((lower.contains("/su") || lower.contains("magisk") || lower.contains("supersu")
+            || lower.contains("busybox") || lower.contains("xposed")
+            || lower.contains("lsposed") || lower.contains("edxposed")
+            || lower.contains("riru") || lower.contains("zygisk"))
+            && (path.startsWith("/system") || path.startsWith("/sbin")
+                || path.startsWith("/data/adb") || path.startsWith("/data/local")
+                || path.startsWith("/su") || path.startsWith("/cache"))) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean containsRootSignature(String line) {
+        if (line == null) return false;
+        String lower = line.toLowerCase();
+        return lower.contains("xposed") || lower.contains("magisk")
+            || lower.contains("supersu") || lower.contains("substrate")
+            || lower.contains("lsposed") || lower.contains("edxposed")
+            || lower.contains("riru") || lower.contains("zygisk")
+            || lower.contains("libxposed") || lower.contains("liblspd");
     }
 
     // ====================================================================
     // 辅助方法
     // ====================================================================
-
-    // 构建伪造的WifiInfo对象
     private WifiInfo buildFakeWifiInfo() {
         try {
-            // 通过Unsafe创建WifiInfo实例（绕过构造函数）
             Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
-            java.lang.reflect.Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
+            Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
             unsafeField.setAccessible(true);
             Object unsafe = unsafeField.get(null);
-            java.lang.reflect.Method allocate = unsafeClass.getMethod("allocateInstance", Class.class);
+            Method allocate = unsafeClass.getMethod("allocateInstance", Class.class);
             WifiInfo info = (WifiInfo) allocate.invoke(unsafe, WifiInfo.class);
 
-            // 通过反射设置字段 - 遍历所有可能的字段名
             setField(info, "mBssid", fakeBSSID);
             setField(info, "mBSSID", fakeBSSID);
             setField(info, "mMacAddress", fakeMAC);
@@ -966,19 +1038,12 @@ public class HookModule implements IXposedHookLoadPackage {
             setIntFieldSafe(info, "mLinkSpeed", fakeLinkSpeed);
             setIntFieldSafe(info, "mFrequency", fakeFrequency);
             setIntFieldSafe(info, "mIpAddress", ipToInt(fakeIP));
-            // Android 12+ 可能有不同的字段名，Android 9 可能没有这些字段
-            setIntFieldSafe(info, "mWifiStandard", 4); // IEEE_802_11_AC
-            setIntFieldSafe(info, "mSecurityType", 3);  // WPA2_PSK
-
             return info;
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": buildFakeWifiInfo failed: " + t.getMessage());
-            // 失败时返回null，但各getter已单独hook，仍能返回伪造值
             return null;
         }
     }
 
-    // 创建伪造的ScanResult
     private ScanResult createFakeScanResult() {
         ScanResult sr = new ScanResult();
         sr.BSSID = fakeBSSID;
@@ -986,47 +1051,76 @@ public class HookModule implements IXposedHookLoadPackage {
         sr.frequency = fakeFrequency;
         sr.level = fakeRSSI;
         sr.capabilities = "[WPA2-PSK-CCMP][ESS]";
-        // SSIDLength在新版Android已移除，用反射设置
-        try {
-            java.lang.reflect.Field f = ScanResult.class.getField("SSIDLength");
-            f.setInt(sr, fakeSSID.length());
-        } catch (Exception e) {
-            // 忽略，旧版本才有这个字段
-        }
         return sr;
     }
 
-    // 通用hook封装 - 用匿名内部类，兼容所有Xposed版本
-    private void hook(String className, ClassLoader cl, String method,
-                      final HookCallback callback) {
+    private String generateFakeIPv6LinkLocal() {
+        try {
+            String[] p = fakeMAC.split(":");
+            int first = Integer.parseInt(p[0], 16) ^ 0x02;
+            return String.format("fe80::%02x%s:%sff:fe%s:%s%s", first, p[1], p[2], p[3], p[4], p[5]);
+        } catch (Exception e) { return "fe80::1"; }
+    }
+
+    private String generateFakeBluetoothMac() {
+        try {
+            String[] p = fakeMAC.split(":");
+            int last = (Integer.parseInt(p[5], 16) + 1) & 0xFF;
+            return String.format("%s:%s:%s:%s:%s:%02X", p[0], p[1], p[2], p[3], p[4], last);
+        } catch (Exception e) { return fakeMAC; }
+    }
+
+    private File createFakeMacFile() throws Exception {
+        File tmp = File.createTempFile("net_", ".dat");
+        tmp.deleteOnExit();
+        FileWriter fw = new FileWriter(tmp);
+        fw.write(fakeMAC.toLowerCase() + "\n");
+        fw.close();
+        return tmp;
+    }
+
+    private File createFakeArpFile() throws Exception {
+        File tmp = File.createTempFile("net_arp_", ".dat");
+        tmp.deleteOnExit();
+        FileWriter fw = new FileWriter(tmp);
+        fw.write("IP address       HW type     Flags       HW address            Mask     Device\n");
+        fw.write(fakeGateway + "     0x1         0x2         " + fakeBSSID.toLowerCase() + "     *        wlan0\n");
+        fw.close();
+        return tmp;
+    }
+
+    private File createFakeInet6File() throws Exception {
+        File tmp = File.createTempFile("net_v6_", ".dat");
+        tmp.deleteOnExit();
+        FileWriter fw = new FileWriter(tmp);
+        String eui64 = macToEui64(fakeMAC);
+        fw.write("fe80" + "00000000" + "00000000" + eui64 + " 03 40 20 80 wlan0\n");
+        fw.write("00000000000000000000000000000001 01 80 10 80       lo\n");
+        fw.close();
+        return tmp;
+    }
+
+    private String macToEui64(String mac) {
+        try {
+            String[] p = mac.split(":");
+            int first = Integer.parseInt(p[0], 16) ^ 0x02;
+            return String.format("%02x%s%sff" + "fe%s%s%s", first, p[1], p[2], p[3], p[4], p[5]);
+        } catch (Exception e) { return "0000000000000000"; }
+    }
+
+    private void hook(String className, ClassLoader cl, String method, final HookCallback cb) {
         try {
             findAndHookMethod(className, cl, method, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        callback.onHook(param);
-                    } catch (Throwable t) {
-                        String msg = "✗ " + method + " callback ERROR: " + t.getMessage();
-                        writeLog(msg);
-                        XposedBridge.log(TAG + ": " + msg);
-                    }
+                    try { cb.onHook(param); } catch (Throwable t) { }
                 }
             });
-            writeLog("✓ " + className + "." + method);
-            XposedBridge.log(TAG + ": ✓ hook " + className + "." + method);
-        } catch (Throwable t) {
-            String msg = "✗ " + className + "." + method + " FAILED: " + t.getMessage();
-            writeLog(msg);
-            XposedBridge.log(TAG + ": " + msg);
-        }
+        } catch (Throwable t) { writeLog("FAIL " + className + "." + method + ": " + t.getMessage()); }
     }
 
-    // 简单回调接口
-    private interface HookCallback {
-        void onHook(XC_MethodHook.MethodHookParam param) throws Throwable;
-    }
+    private interface HookCallback { void onHook(XC_MethodHook.MethodHookParam param) throws Throwable; }
 
-    // 设置对象字段（含父类）
     private void setField(Object obj, String name, Object value) {
         try {
             Class<?> clazz = obj.getClass();
@@ -1036,16 +1130,11 @@ public class HookModule implements IXposedHookLoadPackage {
                     f.setAccessible(true);
                     f.set(obj, value);
                     return;
-                } catch (NoSuchFieldException e) {
-                    clazz = clazz.getSuperclass();
-                }
+                } catch (NoSuchFieldException e) { clazz = clazz.getSuperclass(); }
             }
-        } catch (Throwable t) {
-            // 忽略
-        }
+        } catch (Throwable t) { }
     }
 
-    // 安全的setIntField - 兼容所有Android版本
     private void setIntFieldSafe(Object obj, String name, int value) {
         try {
             Class<?> clazz = obj.getClass();
@@ -1055,326 +1144,197 @@ public class HookModule implements IXposedHookLoadPackage {
                     f.setAccessible(true);
                     f.setInt(obj, value);
                     return;
-                } catch (NoSuchFieldException e) {
-                    clazz = clazz.getSuperclass();
-                }
+                } catch (NoSuchFieldException e) { clazz = clazz.getSuperclass(); }
             }
-        } catch (Throwable t) {
-            // 字段不存在，忽略
-        }
+        } catch (Throwable t) { }
     }
 
-    // 创建包含假MAC的临时文件
-    private File createFakeMacFile() throws Exception {
-        File tmp = File.createTempFile("fake_mac_", ".tmp");
-        tmp.deleteOnExit();
-        FileWriter fw = new FileWriter(tmp);
-        fw.write(fakeMAC.toLowerCase() + "\n");
-        fw.close();
-        return tmp;
-    }
-
-    // IP字符串转int
     private int ipToInt(String ip) {
         try {
-            String[] parts = ip.split("\\.");
-            return (Integer.parseInt(parts[0]) & 0xFF)
-                 | ((Integer.parseInt(parts[1]) & 0xFF) << 8)
-                 | ((Integer.parseInt(parts[2]) & 0xFF) << 16)
-                 | ((Integer.parseInt(parts[3]) & 0xFF) << 24);
-        } catch (Exception e) {
-            return 0;
-        }
+            String[] p = ip.split("\\.");
+            return (Integer.parseInt(p[0]) & 0xFF)
+                | ((Integer.parseInt(p[1]) & 0xFF) << 8)
+                | ((Integer.parseInt(p[2]) & 0xFF) << 16)
+                | ((Integer.parseInt(p[3]) & 0xFF) << 24);
+        } catch (Exception e) { return 0; }
     }
 
-    // MAC字符串转字节数组
     private byte[] parseMac(String mac) {
         if (mac == null) return null;
         String[] parts = mac.split(":");
         if (parts.length != 6) return null;
-        byte[] result = new byte[6];
-        for (int i = 0; i < 6; i++) {
-            result[i] = (byte) Integer.parseInt(parts[i], 16);
-        }
-        return result;
+        byte[] r = new byte[6];
+        for (int i = 0; i < 6; i++) r[i] = (byte) Integer.parseInt(parts[i], 16);
+        return r;
     }
 
-    // 从SharedPreferences读取配置
-    private void loadConfig(ClassLoader cl, String packageName) {
-        XposedBridge.log(TAG + ": loadConfig START for package: " + packageName);
+    private String joinArray(String[] arr) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < arr.length; i++) { if (i > 0) sb.append(" "); sb.append(arr[i]); }
+        return sb.toString();
+    }
 
-        // 方法1: XSharedPreferences（Xposed专用跨进程读取机制）
+    private String joinList(List<String> list) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < list.size(); i++) { if (i > 0) sb.append(" "); sb.append(list.get(i)); }
+        return sb.toString();
+    }
+
+    // ====================================================================
+    // 配置读取
+    // ====================================================================
+    private void loadConfig(ClassLoader cl, String packageName) {
         try {
             XSharedPreferences xPrefs = new XSharedPreferences(PKG_SELF, PREF_NAME);
             xPrefs.makeWorldReadable();
             xPrefs.reload();
-
             if (xPrefs.getFile().exists() && xPrefs.getFile().canRead()) {
-                enabled = xPrefs.getBoolean("spoof_enabled", true);
-                fakeBSSID = xPrefs.getString("fake_bssid", "AA:BB:CC:DD:EE:FF");
-                fakeMAC = xPrefs.getString("fake_mac", "AA:BB:CC:DD:EE:FF");
-                String rawSSID = xPrefs.getString("fake_ssid", "\"MyHomeWiFi\"");
-                fakeSSID = rawSSID.replace("\"", "");
-
-                fakeIP = xPrefs.getString("fake_ip", "192.168.1.100");
-                fakeGateway = xPrefs.getString("fake_gateway", "192.168.1.1");
-                fakeNetmask = xPrefs.getString("fake_netmask", "255.255.255.0");
-                fakeDNS1 = xPrefs.getString("fake_dns1", "8.8.8.8");
-                fakeDNS2 = xPrefs.getString("fake_dns2", "8.8.4.4");
-
-                fakeFrequency = xPrefs.getInt("fake_frequency", 5180);
-                fakeLinkSpeed = xPrefs.getInt("fake_link_speed", 72);
-                fakeRSSI = xPrefs.getInt("fake_rssi", -45);
-
-                writeLog("Config loaded via XSharedPreferences");
-                writeLog("  BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " SSID=" + fakeSSID);
-                writeLog("  IP=" + fakeIP + " GW=" + fakeGateway + " DNS=" + fakeDNS1);
-                XposedBridge.log(TAG + ": XSharedPreferences OK → BSSID=" + fakeBSSID + " IP=" + fakeIP);
+                readPrefs(xPrefs);
+                writeLog("Config: XSharedPreferences OK");
                 return;
-            } else {
-                writeLog("XSharedPreferences file not readable, file=" + xPrefs.getFile().getAbsolutePath());
-                XposedBridge.log(TAG + ": XSharedPreferences file not readable: " + xPrefs.getFile().getAbsolutePath());
             }
-        } catch (Throwable t) {
-            writeLog("XSharedPreferences failed: " + t.getMessage());
-            XposedBridge.log(TAG + ": XSharedPreferences failed: " + t.getMessage());
-        }
+        } catch (Throwable t) { }
 
-        // 方法2: 从外部存储配置文件读取（备用）
-        try {
-            loadConfigFromExternalFile();
-            writeLog("Config loaded from external file successfully");
-            XposedBridge.log(TAG + ": config loaded from external file → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
-            return;
-        } catch (Throwable t) {
-            writeLog("External file load failed: " + t.getMessage());
-            XposedBridge.log(TAG + ": External load failed: " + t.getMessage());
-        }
+        try { loadConfigFromExternalFile(); return; }
+        catch (Throwable t) { }
 
-        // 方法3: 直接读取SharedPreferences XML文件
-        try {
-            loadConfigFromFile();
-            writeLog("Config loaded from XML file successfully");
-            XposedBridge.log(TAG + ": config loaded from XML → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
-            return;
-        } catch (Throwable t) {
-            writeLog("XML file load failed: " + t.getMessage());
-            XposedBridge.log(TAG + ": XML load failed: " + t.getMessage());
-        }
+        try { loadConfigFromFile(); return; }
+        catch (Throwable t) { }
 
-        // 方法4: 通过createPackageContext
         try {
             Object at = XposedHelpers.callStaticMethod(
                 Class.forName("android.app.ActivityThread"), "currentActivityThread");
             Object sysCtx = XposedHelpers.callMethod(at, "getSystemContext");
-            Object spoofCtx = XposedHelpers.callMethod(sysCtx, "createPackageContext",
-                PKG_SELF, 2);
+            Object spoofCtx = XposedHelpers.callMethod(sysCtx, "createPackageContext", PKG_SELF, 2);
             Object prefs = XposedHelpers.callMethod(spoofCtx, "getSharedPreferences", PREF_NAME, 0);
-
             enabled = (Boolean) XposedHelpers.callMethod(prefs, "getBoolean", "spoof_enabled", true);
             fakeBSSID = (String) XposedHelpers.callMethod(prefs, "getString", "fake_bssid", "AA:BB:CC:DD:EE:FF");
             fakeMAC = (String) XposedHelpers.callMethod(prefs, "getString", "fake_mac", "AA:BB:CC:DD:EE:FF");
             String rawSSID = (String) XposedHelpers.callMethod(prefs, "getString", "fake_ssid", "\"MyHomeWiFi\"");
             fakeSSID = rawSSID.replace("\"", "");
-
             fakeIP = (String) XposedHelpers.callMethod(prefs, "getString", "fake_ip", "192.168.1.100");
             fakeGateway = (String) XposedHelpers.callMethod(prefs, "getString", "fake_gateway", "192.168.1.1");
             fakeNetmask = (String) XposedHelpers.callMethod(prefs, "getString", "fake_netmask", "255.255.255.0");
             fakeDNS1 = (String) XposedHelpers.callMethod(prefs, "getString", "fake_dns1", "8.8.8.8");
             fakeDNS2 = (String) XposedHelpers.callMethod(prefs, "getString", "fake_dns2", "8.8.4.4");
-
             fakeFrequency = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_frequency", 5180);
             fakeLinkSpeed = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_link_speed", 72);
             fakeRSSI = (int)(Integer) XposedHelpers.callMethod(prefs, "getInt", "fake_rssi", -45);
-
-            writeLog("Config loaded via createPackageContext");
-            writeLog("  WiFi: b=" + fakeBSSID + " m=" + fakeMAC + " s=" + fakeSSID);
-            writeLog("  IP: " + fakeIP + " gw=" + fakeGateway);
-            XposedBridge.log(TAG + ": config → BSSID=" + fakeBSSID + " IP=" + fakeIP);
         } catch (Throwable t) {
-            writeLog("createPackageContext failed: " + t.getMessage());
-            XposedBridge.log(TAG + ": createPackageContext failed: " + t.getMessage());
-            XposedBridge.log(TAG + ": ALL methods failed, using default values");
-            writeLog("⚠️ ALL CONFIG METHODS FAILED - using defaults!");
+            writeLog("ALL CONFIG METHODS FAILED - defaults used");
         }
     }
 
-    // 从外部存储配置文件读取
+    private void readPrefs(XSharedPreferences prefs) {
+        enabled = prefs.getBoolean("spoof_enabled", true);
+        fakeBSSID = prefs.getString("fake_bssid", "AA:BB:CC:DD:EE:FF");
+        fakeMAC = prefs.getString("fake_mac", "AA:BB:CC:DD:EE:FF");
+        String rawSSID = prefs.getString("fake_ssid", "\"MyHomeWiFi\"");
+        fakeSSID = rawSSID.replace("\"", "");
+        fakeIP = prefs.getString("fake_ip", "192.168.1.100");
+        fakeGateway = prefs.getString("fake_gateway", "192.168.1.1");
+        fakeNetmask = prefs.getString("fake_netmask", "255.255.255.0");
+        fakeDNS1 = prefs.getString("fake_dns1", "8.8.8.8");
+        fakeDNS2 = prefs.getString("fake_dns2", "8.8.4.4");
+        fakeFrequency = prefs.getInt("fake_frequency", 5180);
+        fakeLinkSpeed = prefs.getInt("fake_link_speed", 72);
+        fakeRSSI = prefs.getInt("fake_rssi", -45);
+    }
+
     private void loadConfigFromExternalFile() throws Throwable {
-        // 尝试多个可能的外部存储路径
-        String[] possiblePaths = {
+        String[] paths = {
             "/sdcard/wifi_spoof_config.txt",
             "/sdcard/Android/data/com.fakespoof.wifispoof/wifi_spoof_config.txt",
             "/storage/emulated/0/wifi_spoof_config.txt",
-            "/storage/emulated/0/Android/data/com.fakespoof.wifispoof/wifi_spoof_config.txt",
             "/data/local/tmp/wifi_spoof_config.txt",
             "/sdcard/Android/data/com.fakespoof.wifispoof/files/wifi_spoof_config.txt"
         };
-
         File configFile = null;
-        for (String path : possiblePaths) {
+        for (String path : paths) {
             File f = new File(path);
-            XposedBridge.log(TAG + ": checking path: " + path + " exists=" + f.exists());
-            if (f.exists() && f.length() > 0) {
-                configFile = f;
-                XposedBridge.log(TAG + ": FOUND config at: " + path + " size=" + f.length());
-                break;
-            }
+            if (f.exists() && f.length() > 0) { configFile = f; break; }
         }
+        if (configFile == null) throw new Exception("Not found");
 
-        if (configFile == null) {
-            throw new Exception("Config file not found in any location");
-        }
-
-        XposedBridge.log(TAG + ": reading config from: " + configFile.getAbsolutePath());
-
-        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(configFile));
+        BufferedReader reader = new BufferedReader(new java.io.FileReader(configFile));
         String line;
         while ((line = reader.readLine()) != null) {
             line = line.trim();
-            if (line.startsWith("enabled=")) {
-                enabled = "true".equals(line.substring(8));
-            } else if (line.startsWith("bssid=")) {
-                fakeBSSID = line.substring(6);
-            } else if (line.startsWith("mac=")) {
-                fakeMAC = line.substring(4);
-            } else if (line.startsWith("ssid=")) {
-                fakeSSID = line.substring(5).replace("\"", "");
-            } else if (line.startsWith("ip=")) {
-                fakeIP = line.substring(3);
-            } else if (line.startsWith("gateway=")) {
-                fakeGateway = line.substring(8);
-            } else if (line.startsWith("netmask=")) {
-                fakeNetmask = line.substring(8);
-            } else if (line.startsWith("dns1=")) {
-                fakeDNS1 = line.substring(5);
-            } else if (line.startsWith("dns2=")) {
-                fakeDNS2 = line.substring(5);
-            }
+            if (line.startsWith("enabled=")) enabled = "true".equals(line.substring(8));
+            else if (line.startsWith("bssid=")) fakeBSSID = line.substring(6);
+            else if (line.startsWith("mac=")) fakeMAC = line.substring(4);
+            else if (line.startsWith("ssid=")) fakeSSID = line.substring(5).replace("\"", "");
+            else if (line.startsWith("ip=")) fakeIP = line.substring(3);
+            else if (line.startsWith("gateway=")) fakeGateway = line.substring(8);
+            else if (line.startsWith("netmask=")) fakeNetmask = line.substring(8);
+            else if (line.startsWith("dns1=")) fakeDNS1 = line.substring(5);
+            else if (line.startsWith("dns2=")) fakeDNS2 = line.substring(5);
         }
         reader.close();
-
-        XposedBridge.log(TAG + ": LOADED → BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP + " GW=" + fakeGateway);
     }
 
-    // 直接读取SharedPreferences XML文件
     private void loadConfigFromFile() throws Throwable {
-        // 尝试多个可能的路径
-        String[] possiblePaths = {
+        String[] paths = {
             "/data/data/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml",
             "/data/user/0/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml",
             "/data/user_de/0/" + PKG_SELF + "/shared_prefs/" + PREF_NAME + ".xml"
         };
-
         File prefsFile = null;
-        for (String path : possiblePaths) {
+        for (String path : paths) {
             File f = new File(path);
-            XposedBridge.log(TAG + ": checking path: " + path + " exists=" + f.exists());
-            if (f.exists()) {
-                prefsFile = f;
-                XposedBridge.log(TAG + ": FOUND config file at: " + path);
-                break;
-            }
+            if (f.exists()) { prefsFile = f; break; }
         }
+        if (prefsFile == null) throw new Exception("Not found");
 
-        if (prefsFile == null) {
-            writeLog("Config file NOT FOUND in any location");
-            XposedBridge.log(TAG + ": config file not found in any location");
-            throw new Exception("Config file not found");
-        }
-
-        XposedBridge.log(TAG + ": reading config from: " + prefsFile.getAbsolutePath());
-        XposedBridge.log(TAG + ": file size: " + prefsFile.length() + " bytes");
-
-        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(prefsFile));
+        BufferedReader reader = new BufferedReader(new java.io.FileReader(prefsFile));
         StringBuilder sb = new StringBuilder();
         String line;
-        while ((line = reader.readLine()) != null) {
-            sb.append(line);
-        }
+        while ((line = reader.readLine()) != null) sb.append(line);
         reader.close();
 
         String xml = sb.toString();
-        XposedBridge.log(TAG + ": XML content length: " + xml.length());
-        // 打印XML内容前200字符用于调试
-        XposedBridge.log(TAG + ": XML preview: " + xml.substring(0, Math.min(200, xml.length())));
-
-        // 解析配置
         enabled = parseXmlBool(xml, "spoof_enabled", true);
         fakeBSSID = parseXmlString(xml, "fake_bssid", "AA:BB:CC:DD:EE:FF");
         fakeMAC = parseXmlString(xml, "fake_mac", "AA:BB:CC:DD:EE:FF");
-        String rawSSID = parseXmlString(xml, "fake_ssid", "\"MyHomeWiFi\"");
-        fakeSSID = rawSSID.replace("\"", "");
-
-        // 解析IP配置
+        fakeSSID = parseXmlString(xml, "fake_ssid", "\"MyHomeWiFi\"").replace("\"", "");
         fakeIP = parseXmlString(xml, "fake_ip", "192.168.1.100");
         fakeGateway = parseXmlString(xml, "fake_gateway", "192.168.1.1");
         fakeNetmask = parseXmlString(xml, "fake_netmask", "255.255.255.0");
         fakeDNS1 = parseXmlString(xml, "fake_dns1", "8.8.8.8");
         fakeDNS2 = parseXmlString(xml, "fake_dns2", "8.8.4.4");
-
-        // 解析网络参数
         fakeFrequency = parseXmlInt(xml, "fake_frequency", 5180);
         fakeLinkSpeed = parseXmlInt(xml, "fake_link_speed", 72);
         fakeRSSI = parseXmlInt(xml, "fake_rssi", -45);
-
-        writeLog("Config loaded from file:");
-        writeLog("  enabled=" + enabled);
-        writeLog("  BSSID=" + fakeBSSID);
-        writeLog("  MAC=" + fakeMAC);
-        writeLog("  SSID=" + fakeSSID);
-        writeLog("  IP=" + fakeIP);
-        writeLog("  Gateway=" + fakeGateway);
-        writeLog("  DNS=" + fakeDNS1 + "," + fakeDNS2);
-
-        XposedBridge.log(TAG + ": LOADED BSSID=" + fakeBSSID + " MAC=" + fakeMAC + " IP=" + fakeIP);
     }
 
-    // 从XML中提取字符串值
-    private String parseXmlString(String xml, String key, String defaultValue) {
+    private String parseXmlString(String xml, String key, String def) {
         try {
-            // 搜索 name="key">value< 格式
-            String search = "name=\"" + key + "\">";
-            int start = xml.indexOf(search);
-            if (start < 0) return defaultValue;
-            start += search.length();
+            String s = "name=\"" + key + "\">";
+            int start = xml.indexOf(s);
+            if (start < 0) return def;
+            start += s.length();
             int end = xml.indexOf("<", start);
-            if (end < 0) return defaultValue;
-            String val = xml.substring(start, end);
-            // XML转义还原
-            val = val.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'");
-            return val;
-        } catch (Exception e) {
-            return defaultValue;
-        }
+            if (end < 0) return def;
+            return xml.substring(start, end).replace("&amp;", "&").replace("&lt;", "<")
+                .replace("&gt;", ">").replace("&quot;", "\"");
+        } catch (Exception e) { return def; }
     }
 
-    // 从XML中提取布尔值
-    private boolean parseXmlBool(String xml, String key, boolean defaultValue) {
-        String val = parseXmlString(xml, key, String.valueOf(defaultValue));
-        return "true".equals(val);
+    private boolean parseXmlBool(String xml, String key, boolean def) {
+        return "true".equals(parseXmlString(xml, key, String.valueOf(def)));
     }
 
-    // 从XML中提取整数值
-    private int parseXmlInt(String xml, String key, int defaultValue) {
-        String val = parseXmlString(xml, key, String.valueOf(defaultValue));
-        try {
-            return Integer.parseInt(val);
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
+    private int parseXmlInt(String xml, String key, int def) {
+        try { return Integer.parseInt(parseXmlString(xml, key, String.valueOf(def))); }
+        catch (Exception e) { return def; }
     }
 
-    // 写日志到文件
     private void writeLog(String msg) {
         try {
-            File f = new File(LOG_FILE);
-            PrintWriter pw = new PrintWriter(new FileWriter(f, true));
+            PrintWriter pw = new PrintWriter(new FileWriter(new File(LOG_FILE), true));
             pw.println(System.currentTimeMillis() + " " + msg);
             pw.flush();
             pw.close();
-        } catch (Exception e) {
-            // 忽略
-        }
+        } catch (Exception e) { }
     }
 }
