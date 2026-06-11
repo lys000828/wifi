@@ -27,11 +27,13 @@ import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
+import de.robv.android.xposed.IXposedHookZygoteInit;
 import static de.robv.android.xposed.XposedHelpers.findAndHookMethod;
 
-public class HookModule implements IXposedHookLoadPackage {
+public class HookModule implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String TAG = "WifiSpoof";
     private static final String PREF_NAME = "wifi_spoof_config";
+    private static String sModulePath = null;
     private static final String PKG_SELF = "com.fakespoof.wifispoof";
     private static final String LOG_FILE = "/sdcard/wifispoof_hook.log";
 
@@ -92,6 +94,12 @@ public class HookModule implements IXposedHookLoadPackage {
     };
 
     @Override
+    public void initZygote(StartupParam startupParam) throws Throwable {
+        sModulePath = startupParam.modulePath;
+        XposedBridge.log(TAG + ": module path = " + sModulePath);
+    }
+
+    @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (lpparam.packageName.equals(PKG_SELF)) return;
 
@@ -132,51 +140,87 @@ public class HookModule implements IXposedHookLoadPackage {
     // 初始化Native层hook
     private void initNativeHook(ClassLoader cl) {
         try {
-            // 尝试从模块APK中加载native库
-            String nativeDir = null;
-            try {
-                android.content.pm.ApplicationInfo ai = null;
-                Object at = XposedHelpers.callStaticMethod(
-                    Class.forName("android.app.ActivityThread"), "currentActivityThread");
-                Object sysCtx = XposedHelpers.callMethod(at, "getSystemContext");
-                Object pm = XposedHelpers.callMethod(sysCtx, "getPackageManager");
-                ai = (android.content.pm.ApplicationInfo) XposedHelpers.callMethod(pm,
-                    "getApplicationInfo", PKG_SELF, 0);
-                nativeDir = ai.nativeLibraryDir;
-            } catch (Throwable t) {
-                // fallback: try common paths
-                String[] paths = {
-                    "/data/app/~~*/com.fakespoof.wifispoof-*/lib/arm64",
-                    "/data/app/com.fakespoof.wifispoof-*/lib/arm64-v8a",
-                    "/data/app/com.fakespoof.wifispoof-*/lib/armeabi-v7a"
-                };
-                for (String p : paths) {
-                    File dir = new File(p.replace("*", ""));
-                    if (dir.exists()) { nativeDir = dir.getAbsolutePath(); break; }
-                }
-            }
-
-            if (nativeDir != null) {
-                String libPath = nativeDir + "/libnative_hook.so";
-                if (new File(libPath).exists()) {
-                    System.load(libPath);
-                    NativeHook.init(fakeMAC, fakeIP, fakeGateway, fakeSSID);
-                    writeLog("OK Native hook loaded from: " + libPath);
-                    return;
-                }
-            }
-
-            // 直接尝试loadLibrary (可能在目标进程的lib路径中)
-            if (NativeHook.load()) {
+            String libPath = findNativeLib();
+            if (libPath != null) {
+                System.load(libPath);
                 NativeHook.init(fakeMAC, fakeIP, fakeGateway, fakeSSID);
-                writeLog("OK Native hook loaded via loadLibrary");
-            } else {
-                writeLog("WARN Native hook library not available");
+                writeLog("OK Native hook loaded: " + libPath);
+                return;
             }
+            writeLog("WARN Native lib not found, Java-only mode");
         } catch (Throwable t) {
             writeLog("FAIL Native hook: " + t.getMessage());
             XposedBridge.log(TAG + ": native hook failed: " + t.getMessage());
         }
+    }
+
+    private String findNativeLib() {
+        String[] abis = {"arm64-v8a", "armeabi-v7a", "arm64", "arm"};
+
+        // 方法1: 从模块APK路径推断lib位置 (最可靠)
+        if (sModulePath != null) {
+            // sModulePath 形如 /data/app/~~xxx/com.fakespoof.wifispoof-yyy/base.apk
+            String moduleDir = sModulePath.substring(0, sModulePath.lastIndexOf('/'));
+            for (String abi : abis) {
+                String p = moduleDir + "/lib/" + abi + "/libnative_hook.so";
+                if (new File(p).exists()) {
+                    writeLog("findNativeLib: found via modulePath: " + p);
+                    return p;
+                }
+            }
+        }
+
+        // 方法2: 通过PackageManager获取nativeLibraryDir
+        try {
+            Object at = XposedHelpers.callStaticMethod(
+                Class.forName("android.app.ActivityThread"), "currentActivityThread");
+            Object ctx = XposedHelpers.callMethod(at, "getSystemContext");
+            Object pm = XposedHelpers.callMethod(ctx, "getPackageManager");
+            android.content.pm.ApplicationInfo ai =
+                (android.content.pm.ApplicationInfo) XposedHelpers.callMethod(
+                    pm, "getApplicationInfo", PKG_SELF, 0);
+            if (ai.nativeLibraryDir != null) {
+                String path = ai.nativeLibraryDir + "/libnative_hook.so";
+                if (new File(path).exists()) return path;
+            }
+        } catch (Throwable t) {
+            writeLog("findNativeLib PM: " + t.getMessage());
+        }
+
+        // 方法3: 扫描/data/app
+        try {
+            File dataApp = new File("/data/app");
+            if (dataApp.exists()) {
+                File[] dirs = dataApp.listFiles();
+                if (dirs != null) {
+                    for (File d : dirs) {
+                        if (d.getName().contains("fakespoof") || d.getName().contains(PKG_SELF)) {
+                            for (String abi : abis) {
+                                File lib = new File(d, "lib/" + abi + "/libnative_hook.so");
+                                if (lib.exists()) return lib.getAbsolutePath();
+                            }
+                            File[] subs = d.listFiles();
+                            if (subs != null) {
+                                for (File sub : subs) {
+                                    for (String abi : abis) {
+                                        File lib = new File(sub, "lib/" + abi + "/libnative_hook.so");
+                                        if (lib.exists()) return lib.getAbsolutePath();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable t) { }
+
+        // 方法4: 备用手动路径
+        String[] fallbacks = {"/data/local/tmp/libnative_hook.so"};
+        for (String p : fallbacks) {
+            if (new File(p).exists()) return p;
+        }
+
+        return null;
     }
 
     private boolean isSystemPackage(String packageName) {
