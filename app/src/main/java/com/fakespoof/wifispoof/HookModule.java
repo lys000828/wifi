@@ -111,6 +111,10 @@ public class HookModule implements IXposedHookLoadPackage {
 
         writeLog("Config: MAC=" + fakeMAC + " BSSID=" + fakeBSSID + " SSID=" + fakeSSID + " IP=" + fakeIP);
 
+        // Native层hook - 拦截libc调用（open/ioctl/stat/access等）
+        initNativeHook(lpparam.classLoader);
+
+        // Java层hook
         hookWifiApi(lpparam.classLoader);
         hookNetworkInterface(lpparam.classLoader);
         hookNetworkLayer(lpparam.classLoader);
@@ -123,6 +127,56 @@ public class HookModule implements IXposedHookLoadPackage {
 
         writeLog("--- All hooks done ---");
         XposedBridge.log(TAG + ": hooked " + lpparam.packageName);
+    }
+
+    // 初始化Native层hook
+    private void initNativeHook(ClassLoader cl) {
+        try {
+            // 尝试从模块APK中加载native库
+            String nativeDir = null;
+            try {
+                android.content.pm.ApplicationInfo ai = null;
+                Object at = XposedHelpers.callStaticMethod(
+                    Class.forName("android.app.ActivityThread"), "currentActivityThread");
+                Object sysCtx = XposedHelpers.callMethod(at, "getSystemContext");
+                Object pm = XposedHelpers.callMethod(sysCtx, "getPackageManager");
+                ai = (android.content.pm.ApplicationInfo) XposedHelpers.callMethod(pm,
+                    "getApplicationInfo", PKG_SELF, 0);
+                nativeDir = ai.nativeLibraryDir;
+            } catch (Throwable t) {
+                // fallback: try common paths
+                String[] paths = {
+                    "/data/app/~~*/com.fakespoof.wifispoof-*/lib/arm64",
+                    "/data/app/com.fakespoof.wifispoof-*/lib/arm64-v8a",
+                    "/data/app/com.fakespoof.wifispoof-*/lib/armeabi-v7a"
+                };
+                for (String p : paths) {
+                    File dir = new File(p.replace("*", ""));
+                    if (dir.exists()) { nativeDir = dir.getAbsolutePath(); break; }
+                }
+            }
+
+            if (nativeDir != null) {
+                String libPath = nativeDir + "/libnative_hook.so";
+                if (new File(libPath).exists()) {
+                    System.load(libPath);
+                    NativeHook.init(fakeMAC, fakeIP, fakeGateway, fakeSSID);
+                    writeLog("OK Native hook loaded from: " + libPath);
+                    return;
+                }
+            }
+
+            // 直接尝试loadLibrary (可能在目标进程的lib路径中)
+            if (NativeHook.load()) {
+                NativeHook.init(fakeMAC, fakeIP, fakeGateway, fakeSSID);
+                writeLog("OK Native hook loaded via loadLibrary");
+            } else {
+                writeLog("WARN Native hook library not available");
+            }
+        } catch (Throwable t) {
+            writeLog("FAIL Native hook: " + t.getMessage());
+            XposedBridge.log(TAG + ": native hook failed: " + t.getMessage());
+        }
     }
 
     private boolean isSystemPackage(String packageName) {
